@@ -18,7 +18,9 @@
     "domain:check": "tsx scripts/generate-domains.ts --check",
     "db:generate": "prisma generate && npm run domain:generate",
     "db:migrate": "prisma migrate deploy",
-    "user:create": "node dist/scripts/create-user.js"
+    "user:create": "node dist/scripts/create-user.js",
+    "collect": "tsx scripts/collect.ts",
+    "browser:check": "tsx scripts/browser-check.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.3",

@@ -66,9 +66,9 @@ client/
   src/router/          Vue Router
   src/assets/css/      общие стили и SCSS-миксины
 server/
-  src/                 плоские домены: users, jobs
+  src/                 плоские домены: users, jobs, searches (сборщик и модули сайтов)
   framework/           core, composition, http и генератор
-  plugins/             технические возможности: БД, пароли, клиент, системные маршруты
+  plugins/             технические возможности: БД, пароли, HTTP-клиент, клиент, системные маршруты
   middlewares/         идентификация и уровни HTTP-доступа
   prisma/              схема, миграции, domains.json для генератора
   data/                файл SQLite, вне Git
@@ -80,6 +80,21 @@ compose.yaml           приложение и том с БД
 
 Модель данных описана в [server/prisma/schema.prisma](../server/prisma/schema.prisma),
 кому какие данные принадлежат — в [README](../README.md#пользователи-и-данные).
+
+## Сборщик вакансий
+
+```bash
+npm run collect -- --help
+npm run collect -- --user me@example.com --source linkedin --query "node.js" --location Remote \
+  --exclude "java,android,qa" --dry-run
+npm run browser:check                      # брокер agent Chromium: ping и текущая страница (только чтение)
+npm run browser:check -- --open <URL>      # открыть URL в общей вкладке, показать текст и ссылки
+```
+
+Команда запускается через `tsx` из исходников и пишет в БД из `DATABASE_URL` от имени указанного
+пользователя. `--dry-run` только печатает новые карточки. Ctrl+C дописывает текущую страницу
+и останавливает прогон, `--max-minutes` (по умолчанию 60) ограничивает его длительность.
+Устройство описано в [collector-plan.md](collector-plan.md).
 
 ## Миграции
 
@@ -119,4 +134,4 @@ GitHub Actions запускает эти же проверки на Node.js 22.
 - [Авторизация](authentication.md) — регистрация, JWT, cookie, сессии и роли.
 - [Генератор](generator.md) — Prisma как источник DTO и схем.
 - [Домен jobs](jobs.md) — статусы, HTTP API и API конвейера.
-- [План сборщика](collector-plan.md) — модульная архитектура источников вакансий.
+- [Сборщик](collector-plan.md) — ядро, контракт модуля сайта и план источников.

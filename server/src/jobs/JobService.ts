@@ -1,6 +1,9 @@
 import type { Actor } from '../../framework/core/actor.js';
 import { ApplicationError } from '../../framework/core/errors.js';
 import type { JobRepository } from './JobRepository.js';
+import type { JobFoundResult, JobInput, JobPipelineApi } from './JobTypes.js';
+
+export type { JobInput } from './JobTypes.js';
 
 export const jobStatuses = [
   'found', 'scored', 'rejected', 'queued', 'applying', 'applied', 'needs_input', 'failed', 'skipped',
@@ -53,22 +56,10 @@ export type JobListQuery = Readonly<{
   sort?: 'found' | 'score';
 }>;
 
-/** A job card from a source module or from manual input. */
-export type JobInput = Readonly<{
-  url: string;
-  source: string;
-  title: string;
-  company: string;
-  externalId?: string | null;
-  location?: string | null;
-  description?: string | null;
-  postedAt?: Date | null;
-  /** Source-specific fields; stored as JSON and never returned over HTTP. */
-  raw?: unknown;
-}>;
 export type NewJob = Readonly<{
   url: string; source: string; title: string; company: string; externalId: string | null;
   location: string | null; description: string | null; postedAt: Date | null; raw: string | null;
+  status: 'found' | 'rejected'; why: string | null;
 }>;
 
 export type JobScore = Readonly<{ score: number; why?: string | null; redFlags?: readonly string[] }>;
@@ -96,7 +87,8 @@ function newJob(input: JobInput): NewJob {
   const title = input.title.trim();
   const company = input.company.trim();
   const source = input.source.trim().toLowerCase();
-  if (!title || !company || !source) throw new ApplicationError('INVALID_JOB', 'Нужны название, компания и источник.', 400);
+  const rejection = input.rejection?.trim() || null;
+  if (!title || (!company && !rejection) || !source) throw new ApplicationError('INVALID_JOB', 'Нужны название, компания и источник.', 400);
   return {
     url: canonicalJobUrl(input.url),
     source,
@@ -107,10 +99,12 @@ function newJob(input: JobInput): NewJob {
     description: input.description?.trim() || null,
     postedAt: input.postedAt ?? null,
     raw: input.raw === undefined ? null : JSON.stringify(input.raw),
+    status: rejection ? 'rejected' : 'found',
+    why: rejection,
   };
 }
 
-export class JobService {
+export class JobService implements JobPipelineApi {
   constructor(private readonly jobs: JobRepository) {}
 
   // ── Owner's actions over HTTP ──
@@ -135,7 +129,7 @@ export class JobService {
   }
 
   async create(actor: Actor, input: Omit<JobInput, 'source'> & { source?: string }): Promise<Job> {
-    const job = await this.jobs.create(actor.id, newJob({ ...input, source: input.source ?? 'manual' }));
+    const job = await this.jobs.create(actor.id, newJob({ ...input, source: input.source ?? 'manual', rejection: null }));
     if (!job) throw new ApplicationError('JOB_EXISTS', 'Эта вакансия уже есть в вашем списке.', 409);
     return job;
   }
@@ -153,8 +147,7 @@ export class JobService {
 
   // ── Pipeline stages (collector, scorer, applier) act on behalf of the owner ──
 
-  /** Saves new cards; a broken card is counted and skipped instead of failing the batch. */
-  async recordFound(ownerId: string, inputs: readonly JobInput[]) {
+  async recordFound(ownerId: string, inputs: readonly JobInput[]): Promise<JobFoundResult> {
     const jobIds: string[] = [];
     let duplicates = 0;
     let invalid = 0;
@@ -168,7 +161,6 @@ export class JobService {
     return { created: jobIds.length, duplicates, invalid, jobIds };
   }
 
-  /** URLs the owner has not seen yet, so the collector loads details only for new jobs. */
   async unknownUrls(ownerId: string, urls: readonly string[]): Promise<string[]> {
     const valid = urls.flatMap((url) => { try { return [{ url, canonical: canonicalJobUrl(url) }]; } catch { return []; } });
     const known = new Set(await this.jobs.existingUrls(ownerId, valid.map((item) => item.canonical)));

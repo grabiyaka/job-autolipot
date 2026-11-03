@@ -1,7 +1,7 @@
 # Сервер job-autopilot
 
 Backend на Fastify, Prisma 7 (SQLite) и TypeScript. Реализованы домены `users` и
-[`jobs`](../docs/jobs.md); сборщик описан в [плане](../docs/collector-plan.md).
+[`jobs`](../docs/jobs.md) и `searches` (сборщик, описан в [collector-plan.md](../docs/collector-plan.md)).
 
 Перед изменением архитектуры или добавлением домена прочитай
 [соглашения проекта](../docs/architecture.md). [README](../README.md) описывает состояние проекта,

@@ -21,6 +21,8 @@
     "domain:generate": "npm --prefix server run domain:generate --",
     "domain:check": "npm --prefix server run domain:check",
     "architecture": "npm --prefix server run architecture",
-    "user:create": "npm --prefix server run user:create --"
+    "user:create": "npm --prefix server run user:create --",
+    "collect": "npm --prefix server run collect --",
+    "browser:check": "npm --prefix server run browser:check --"
   }
 }

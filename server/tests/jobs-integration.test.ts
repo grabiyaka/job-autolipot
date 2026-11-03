@@ -164,4 +164,18 @@ describe('Jobs: owner-scoped HTTP API and pipeline API on SQLite', () => {
     });
     expect(anonymous.statusCode).toBe(401);
   });
+
+  it('saves a job rejected by a pipeline stage as rejected with its reason, even without a company', async () => {
+    const result = await jobs.recordFound(ownerId, [
+      { url: 'https://filter.example.test/1', source: 'filtertest', title: 'Java Developer', company: '', rejection: 'название: исключено «java»' },
+      { url: 'https://filter.example.test/2', source: 'filtertest', title: 'Node Developer', company: '' },
+    ]);
+    expect(result).toMatchObject({ created: 1, invalid: 1 });
+    const saved = await jobs.get({ id: ownerId, role: 'user' }, result.jobIds[0]!);
+    expect(saved).toMatchObject({ status: 'rejected', why: 'название: исключено «java»', company: '' });
+    expect((await jobs.changeStatus({ id: ownerId, role: 'user' }, saved.id, 'queued')).status).toBe('queued');
+
+    const manual = await create(owner, { url: 'https://filter.example.test/3', title: 'X', company: 'Y', rejection: 'nope' });
+    expect(manual.statusCode).toBe(400);
+  });
 });

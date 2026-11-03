@@ -2,7 +2,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { requireActor } from '../../framework/core/actor.js';
 import type { JobInput, JobListQuery, JobService, JobStatus, UserJobStatus } from './JobService.js';
 
-export type JobCreateBody = Omit<JobInput, 'source' | 'raw' | 'postedAt' | 'externalId'> & { source?: string };
+export type JobCreateBody = Omit<JobInput, 'source' | 'raw' | 'postedAt' | 'externalId' | 'rejection'> & { source?: string };
 
 export type JobListQuerystring = Readonly<{
   page?: string; limit?: string; status?: JobStatus; source?: string; search?: string; sort?: 'found' | 'score';

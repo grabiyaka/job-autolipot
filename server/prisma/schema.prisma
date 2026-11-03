@@ -25,6 +25,7 @@ model User {
   createdAt    DateTime      @default(now())
   sessions     AuthSession[]
   jobs         Job[]
+  searches     Search[]
   answers      Answer[]
 
   @@map("users")
@@ -89,6 +90,63 @@ model Job {
   @@index([userId, status])
   @@index([userId, company])
   @@map("jobs")
+}
+
+// ───────────── Поиски (этап «Сбор») ─────────────
+
+/// Сохранённый поиск пользователя на одном источнике. Сборщик прогоняет все включённые поиски.
+model Search {
+  id        String      @id @default(uuid())
+  userId    String
+  /// Код модуля-источника из реестра `src/searches/SearchSources.ts`.
+  source    String
+  keywords  String
+  location  String?
+  /// JSON-массив слов: в названии вакансии должно быть хотя бы одно (пусто — без ограничения).
+  includeTitle String?
+  /// JSON-массив слов: вакансия с любым из них в названии отсеивается до открытия её страницы.
+  excludeTitle String?
+  enabled   Boolean     @default(true)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runs      SearchRun[]
+
+  @@index([userId])
+  @@map("searches")
+}
+
+/// Почему прогон поиска остановился.
+enum SearchStopReason {
+  end
+  known
+  limit
+  aborted
+  error
+}
+
+/// Отчёт одного прогона сохранённого поиска. Пробные прогоны (dry-run) не записываются.
+model SearchRun {
+  id         String           @id @default(uuid())
+  searchId   String
+  startedAt  DateTime
+  finishedAt DateTime
+  pages      Int
+  /// Карточки в выдаче без повторов внутри прогона.
+  seen       Int
+  /// Карточки, которых у владельца ещё не было.
+  fresh      Int
+  /// Новые карточки, отсеянные фильтром по названию (сохранены как rejected).
+  filtered   Int              @default(0)
+  created    Int
+  duplicates Int
+  invalid    Int
+  stopped    SearchStopReason
+  error      String?
+  search     Search           @relation(fields: [searchId], references: [id], onDelete: Cascade)
+
+  @@index([searchId, startedAt])
+  @@map("search_runs")
 }
 
 enum ApplicationStatus {

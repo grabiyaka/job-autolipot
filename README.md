@@ -9,8 +9,9 @@
 
 **Состояние.** Работают вход, регистрация и сессии. Готова схема БД: `jobs`, `applications`,
 `questions`, `answers`. Домен [`jobs`](docs/jobs.md) готов: HTTP API для своих вакансий и API
-для этапов конвейера. Страница «Вакансии» пока пустая. Сборщика, отбора и подачи
-ещё нет. Следующий шаг — [модульный сборщик](docs/collector-plan.md).
+для этапов конвейера. Страница «Вакансии» пока пустая. Домен `searches` ([сборщик](docs/collector-plan.md)):
+сохранённые поиски, их прогон `npm run collect` и история прогонов. Первый источник — LinkedIn
+через залогиненный agent Chromium (брокер, только чтение). Отбора и подачи ещё нет.
 
 Запуск, структура и проверки описаны в [docs/development.md](docs/development.md).
 
@@ -76,7 +77,7 @@ LinkedIn весит 10–50k токенов, и на таком железе м�
 | Домен `users` | `server/src/users` | регистрация, вход, сессии в HttpOnly cookie | готов |
 | Схема БД | `server/prisma/schema.prisma` | `jobs`, `applications`, `questions`, `answers` | готова |
 | Домен `jobs` | `server/src/jobs` | вакансии пользователя: выдача, ручное добавление, статусы, API для сборщика и scorer — [docs/jobs.md](docs/jobs.md) | готов |
-| `collector` | `server/collector` | ядро и модули источников (LinkedIn, Djinni, …) | [план](docs/collector-plan.md) |
+| Домен `searches` | `server/src/searches` | сохранённые поиски, прогон сборщика, история прогонов, модули источников (remote-доски, LinkedIn, …) | ядро и LinkedIn готовы — [план](docs/collector-plan.md) |
 | Домены `applications`, `questions`, `answers` | `server/src/…` | попытки подачи, вопросы агента, банк ответов | план |
 | `scorer` | плагин Ollama | JSON-оценка вакансии против CV | план |
 | `applier` | обёртка над `claude -p` | запуск DeepSeek с MCP, разбор JSON-результата, таймауты | план |
