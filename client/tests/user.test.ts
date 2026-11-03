@@ -9,7 +9,7 @@ vi.mock('../src/mixin/fetch', async (importOriginal) => ({
 }));
 
 const manager: SessionUser = {
-  id: 'user-1', email: 'admin@example.test', name: 'Менеджер', role: 'manager',
+  id: 'user-1', email: 'admin@example.test', name: 'Пользователь', role: 'user',
 };
 
 beforeEach(() => {
@@ -18,7 +18,7 @@ beforeEach(() => {
 });
 
 describe('user session', () => {
-  it('restores a cookie session once and exposes manager capabilities', async () => {
+  it('restores a cookie session once', async () => {
     vi.mocked(request).mockResolvedValue({ user: manager });
     const store = useUserStore();
 
@@ -28,7 +28,6 @@ describe('user session', () => {
     expect(request).toHaveBeenCalledExactlyOnceWith('/api/auth/me', { anonymous: true });
     expect(store.user).toEqual(manager);
     expect(store.authenticated).toBe(true);
-    expect(store.canManageTasks).toBe(true);
   });
 
   it('treats an expired cookie as an anonymous session', async () => {
@@ -39,7 +38,6 @@ describe('user session', () => {
     expect(store.user).toBeNull();
     expect(store.restored).toBe(true);
     expect(store.authenticated).toBe(false);
-    expect(store.canManageTasks).toBe(false);
   });
 
   it('keeps a failed connection retryable instead of claiming the user is logged out', async () => {
@@ -100,23 +98,29 @@ describe('user session', () => {
     expect(store.authenticated).toBe(true);
   });
 
+  it('registers a regular user and keeps the password out of state', async () => {
+    vi.mocked(request).mockResolvedValue({ user: manager, expiresAt: '2030-01-01T00:00:00.000Z' });
+    const store = useUserStore();
+
+    await store.register(manager.name, manager.email, 'a-long-test-password');
+
+    expect(request).toHaveBeenCalledExactlyOnceWith('/api/auth/register', {
+      method: 'POST', body: { name: manager.name, email: manager.email, password: 'a-long-test-password' }, anonymous: true,
+    });
+    expect(store.user).toEqual(manager);
+    expect(JSON.stringify(store.$state)).not.toContain('a-long-test-password');
+  });
+
   it.each([
-    { role: 'admin', label: 'Администратор', admin: true, general: true, guest: true },
-    { role: 'manager', label: 'Менеджер', admin: false, general: true, guest: true },
-    { role: 'guest', label: 'Гость', admin: false, general: false, guest: true },
-    { role: 'foreign', label: 'Доступ не выдан', admin: false, general: false, guest: false },
-  ] as const)('exposes only the capabilities granted to $role', ({ role, label, admin, general, guest }) => {
+    { role: 'admin', label: 'Администратор', admin: true },
+    { role: 'user', label: 'Пользователь', admin: false },
+  ] as const)('exposes only the capabilities granted to $role', ({ role, label, admin }) => {
     const store = useUserStore();
     store.user = { ...manager, role };
 
     expect(store.authenticated).toBe(true);
     expect(store.roleLabel).toBe(label);
     expect(store.adminAccess).toBe(admin);
-    expect(store.generalAccess).toBe(general);
-    expect(store.guestAccess).toBe(guest);
-    expect(store.canReadTasks).toBe(guest);
-    expect(store.canManageTasks).toBe(general);
-    expect(store.canDeleteTasks).toBe(admin);
   });
 
   it('does not grant any role capabilities without a session', () => {
@@ -124,9 +128,5 @@ describe('user session', () => {
 
     expect(store.roleLabel).toBe('');
     expect(store.adminAccess).toBe(false);
-    expect(store.generalAccess).toBe(false);
-    expect(store.guestAccess).toBe(false);
-    expect(store.canReadTasks).toBe(false);
-    expect(store.canDeleteTasks).toBe(false);
   });
 });

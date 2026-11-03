@@ -33,7 +33,7 @@ describe('session navigation', () => {
   it('restores the existing session before deciding whether a page is accessible', async () => {
     const store = useUserStore(pinia);
     vi.spyOn(store, 'restore').mockImplementation(async () => {
-      store.user = { id: 'user-1', email: 'admin@example.test', name: 'Менеджер', role: 'manager' };
+      store.user = { id: 'user-1', email: 'admin@example.test', name: 'Пользователь', role: 'user' };
       store.restored = true;
     });
 
@@ -45,12 +45,12 @@ describe('session navigation', () => {
 
   it('does not navigate an authenticated user to an external login redirect', async () => {
     const store = useUserStore(pinia);
-    store.user = { id: 'user-1', email: 'admin@example.test', name: 'Менеджер', role: 'manager' };
+    store.user = { id: 'user-1', email: 'admin@example.test', name: 'Пользователь', role: 'user' };
     store.restored = true;
 
     await router.push({ path: '/login', query: { redirect: 'https://example.com/phishing' } });
 
-    expect(router.currentRoute.value.path).toBe('/tasks');
+    expect(router.currentRoute.value.path).toBe('/jobs');
   });
 
   it('shows server unavailability at login while preserving the destination', async () => {
@@ -63,27 +63,28 @@ describe('session navigation', () => {
     expect(router.currentRoute.value.query).toMatchObject({ unavailable: '1', redirect: '/profile' });
   });
 
-  it('keeps the profile accessible before a foreign user receives application access', async () => {
+  it('keeps registration public and sends an authenticated visitor away from it', async () => {
     const store = useUserStore(pinia);
-    store.user = { id: 'user-1', email: 'user@example.test', name: 'Пользователь', role: 'foreign' };
-    store.restored = true;
+    store.clear();
+    await router.push('/register');
+    expect(router.currentRoute.value.path).toBe('/register');
 
-    await router.push('/profile');
-
-    expect(router.currentRoute.value.path).toBe('/profile');
-    expect(store.authenticated).toBe(true);
+    store.user = { id: 'user-1', email: 'user@example.test', name: 'Пользователь', role: 'user' };
+    await router.push('/login');
+    await router.push('/register');
+    expect(router.currentRoute.value.path).toBe('/jobs');
   });
 });
 
 describe('safe post-login destinations', () => {
-  it.each(['/tasks', '/profile', '/tasks?page=2', '/profile#account'])(
+  it.each(['/jobs', '/profile', '/jobs?page=2', '/profile#account'])(
     'keeps an allowed application route: %s', (path) => expect(safeRedirect(path)).toBe(path),
   );
 
   it.each([
     'https://example.com', '//example.com', '/\\example.com', 'javascript:alert(1)',
     '/login', '/api/auth/logout', '/profile/../../login', ['/profile'], undefined, null,
-  ])('falls back to tasks for an untrusted destination: %s', (path) => {
-    expect(safeRedirect(path)).toBe('/tasks');
+  ])('falls back to jobs for an untrusted destination: %s', (path) => {
+    expect(safeRedirect(path)).toBe('/jobs');
   });
 });

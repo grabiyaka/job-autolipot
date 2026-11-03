@@ -5,14 +5,14 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
 }
+
+// ───────────── Пользователи и сессии ─────────────
 
 enum UserRole {
   admin
-  manager
-  guest
-  foreign
+  user
 }
 
 model User {
@@ -20,12 +20,12 @@ model User {
   email        String        @unique
   name         String
   passwordHash String
-  role         UserRole      @default(foreign)
-  subscriberId String?
+  role         UserRole      @default(user)
   disabled     Boolean       @default(false)
-  createdAt    DateTime      @default(now()) @db.Timestamptz(3)
-  subscriber   Subscriber?   @relation(fields: [subscriberId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  createdAt    DateTime      @default(now())
   sessions     AuthSession[]
+  jobs         Job[]
+  answers      Answer[]
 
   @@map("users")
 }
@@ -33,8 +33,8 @@ model User {
 model AuthSession {
   id        String   @id @default(uuid())
   userId    String
-  expiresAt DateTime @db.Timestamptz(3)
-  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
@@ -42,84 +42,130 @@ model AuthSession {
   @@map("auth_sessions")
 }
 
-enum TaskStatus {
-  OPEN
-  IN_PROGRESS
-  DONE
+// ───────────── Вакансии ─────────────
+
+/// found → scored → rejected | queued → applying → applied | needs_input | failed | skipped
+enum JobStatus {
+  found
+  scored
+  rejected
+  queued
+  applying
+  applied
+  needs_input
+  failed
+  skipped
 }
 
-/// Independent CRUD example: field types and HTTP schemas come from this model.
-model Task {
-  id          String     @id @default(uuid())
-  title       String
-  description String?
-  completed   Boolean    @default(false)
-  priority    Int        @default(0)
-  status      TaskStatus @default(OPEN)
-  dueAt       DateTime?  @db.Timestamptz(3)
-  tags        String[]   @default([])
-  createdAt   DateTime   @default(now()) @db.Timestamptz(3)
-  updatedAt   DateTime   @updatedAt @db.Timestamptz(3)
+/// Найденная вакансия пользователя. URL канонизируется модулем источника и вместе с userId
+/// служит ключом дедупликации: одну вакансию могут независимо найти разные пользователи.
+model Job {
+  id           String        @id @default(uuid())
+  userId       String
+  url          String
+  /// Код модуля-источника: linkedin, djinni, indeed, …
+  source       String
+  /// ID вакансии на стороне источника, если он есть.
+  externalId   String?
+  company      String
+  title        String
+  location     String?
+  description  String?
+  /// Сырые данные карточки от модуля (JSON-строка), чтобы не терять поля, не вошедшие в схему.
+  raw          String?
+  score        Int?
+  why          String?
+  /// JSON-массив строк.
+  redFlags     String?
+  status       JobStatus     @default(found)
+  postedAt     DateTime?
+  foundAt      DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applications Application[]
 
-  @@map("tasks")
+  @@unique([userId, url])
+  @@unique([userId, source, externalId])
+  @@index([userId, status])
+  @@index([userId, company])
+  @@map("jobs")
 }
 
-model Subscriber {
-  id                    String    @id
-  accountNumber         String    @unique
-  displayName           String
-  villageName           String
-  meterNumber           String    @unique
-  readingHundredths     Int
-  balanceKopeks         Int
-  maintenanceBalanceKopeks Int      @default(0)
-  verifiedReadingHundredths Int?
-  verifiedAt            String?
-  verifiedByTransactionId String?
-  waterTariffKopeks     Int
-  drainageTariffKopeks  Int
-  hasWater              Boolean
-  hasDrainage           Boolean
-  version               Int       @default(0)
-  readings              Reading[]
-  transactions          LedgerTransaction[]
-  users                 User[]
-
-  @@map("subscribers")
+enum ApplicationStatus {
+  running
+  applied
+  needs_input
+  failed
+  skipped
 }
 
-/// Append-only evidence: corrections and cancellations are additional linked entries.
-model LedgerTransaction {
-  id             String     @id
-  sequence       Int        @unique @default(autoincrement())
-  idempotencyKey String     @unique
-  subscriberId   String
-  createdAt      DateTime   @db.Timestamptz(3)
-  effectiveAt    DateTime   @db.Timestamptz(3)
-  snapshot       Json       @db.JsonB
-  reversesId     String?    @unique
-  amendsId       String?
-  bankReference  String?
-  subscriber     Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  reverses       LedgerTransaction? @relation("Cancellation", fields: [reversesId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  cancelledBy    LedgerTransaction? @relation("Cancellation")
-  amends         LedgerTransaction? @relation("DescriptionChange", fields: [amendsId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  amendments     LedgerTransaction[] @relation("DescriptionChange")
+/// Одна попытка подачи на вакансию.
+model Application {
+  id               String            @id @default(uuid())
+  jobId            String
+  status           ApplicationStatus @default(running)
+  /// Сессия агента (DeepSeek) для `--resume`.
+  sessionId        String?
+  screenshotBefore String?
+  screenshotAfter  String?
+  /// Итоговый JSON агента.
+  result           String?
+  inputTokens      Int               @default(0)
+  outputTokens     Int               @default(0)
+  /// Стоимость в микродолларах (1e-6 USD), чтобы не хранить float.
+  costMicros       Int               @default(0)
+  startedAt        DateTime          @default(now())
+  finishedAt       DateTime?
+  job              Job               @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  questions        Question[]
 
-  @@unique([subscriberId, bankReference])
-  @@index([subscriberId, effectiveAt, sequence])
-  @@map("transactions")
+  @@index([jobId])
+  @@index([status])
+  @@map("applications")
 }
 
-/// An immutable audit record with a complete, validated business snapshot.
-model Reading {
-  id             String     @id
-  idempotencyKey String     @unique
-  subscriberId   String
-  createdAt      DateTime   @db.Timestamptz(3)
-  snapshot       Json       @db.JsonB
-  subscriber     Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+/// open → answered → used
+enum QuestionStatus {
+  open
+  answered
+  used
+}
 
-  @@index([subscriberId, createdAt])
-  @@map("readings")
+/// Вопрос агента по конкретной подаче.
+model Question {
+  id                String         @id @default(uuid())
+  applicationId     String
+  text              String
+  answer            String?
+  status            QuestionStatus @default(open)
+  telegramMessageId String?
+  createdAt         DateTime       @default(now())
+  answeredAt        DateTime?
+  application       Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@index([status])
+  @@map("questions")
+}
+
+enum AnswerOrigin {
+  manual
+  telegram
+}
+
+/// Банк ответов пользователя: вопрос → ответ, переиспользуется во всех его подачах.
+model Answer {
+  id        String       @id @default(uuid())
+  userId    String
+  /// Нормализованная формулировка вопроса (ключ поиска в пределах пользователя).
+  key       String
+  question  String
+  answer    String
+  origin    AnswerOrigin @default(manual)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, key])
+  @@map("answers")
 }

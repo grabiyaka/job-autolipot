@@ -2,7 +2,7 @@ import { ApplicationError } from '../../framework/core/errors.js';
 import type { Passwords } from '../../framework/core/passwords.js';
 import type { Clock, Identifiers } from '../../framework/core/runtime.js';
 import type { UserRepositoryContract } from './UserContracts.js';
-import type { UserApi, UserCreateInput, UserLoginInput, UserProfile, UserSession } from './UserTypes.js';
+import type { UserApi, UserCreateInput, UserLoginInput, UserProfile, UserRegisterInput, UserSession } from './UserTypes.js';
 import { normalizedEmail } from './UserEmail.js';
 import { requireAccountDetails } from './UserRules.js';
 
@@ -21,8 +21,12 @@ export class UserService implements UserApi {
     if (!account || !validPassword || account.disabled) {
       throw new ApplicationError('INVALID_CREDENTIALS', 'Неверный email или пароль.', 401);
     }
-    const expiresAt = new Date(this.clock.now().getTime() + this.sessionTtlSeconds * 1000);
-    return this.users.createSession(this.identifiers.next(), account.user.id, expiresAt);
+    return this.openSession(account.user.id);
+  }
+
+  async register(input: UserRegisterInput): Promise<UserSession> {
+    const user = await this.create({ ...input, role: 'user' });
+    return this.openSession(user.id);
   }
 
   session(sessionId: string, userId: string): Promise<UserSession | null> {
@@ -39,5 +43,10 @@ export class UserService implements UserApi {
     const passwordHash = await this.passwords.hash(input.password);
     const { password: _password, ...account } = input;
     return this.users.create({ ...account, email, name: input.name.trim() }, passwordHash);
+  }
+
+  private openSession(userId: string): Promise<UserSession> {
+    const expiresAt = new Date(this.clock.now().getTime() + this.sessionTtlSeconds * 1000);
+    return this.users.createSession(this.identifiers.next(), userId, expiresAt);
   }
 }

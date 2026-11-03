@@ -1,0 +1,18 @@
+node_modules/
+dist/
+generated/
+.env
+coverage/
+artifacts/
+.playwright-mcp/
+.local/
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo
+.DS_Store
+
+# SQLite database files
+server/data/
+*.db
+*.db-journal

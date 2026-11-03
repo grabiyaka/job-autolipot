@@ -6,8 +6,6 @@ import { isUserRole, requireRole, userRoles } from '../framework/core/roles.js';
 import type { UserRole } from '../framework/core/roles.js';
 import { adminAccess } from '../middlewares/adminAccess.js';
 import { authenticatedAccess } from '../middlewares/authenticatedAccess.js';
-import { generalAccess } from '../middlewares/generalAccess.js';
-import { guestAccess } from '../middlewares/guestAccess.js';
 import { publicAccess } from '../middlewares/publicAccess.js';
 import { registerRequestIdentity } from '../middlewares/requestIdentity.js';
 import { rolesAccess } from '../middlewares/rolesAccess.js';
@@ -15,10 +13,8 @@ import { rolesAccess } from '../middlewares/rolesAccess.js';
 const policies = [
   { name: 'publicAccess', middleware: publicAccess, allowed: ['anonymous', ...userRoles] },
   { name: 'authenticatedAccess', middleware: authenticatedAccess, allowed: [...userRoles] },
-  { name: 'generalAccess', middleware: generalAccess, allowed: ['admin', 'manager'] },
-  { name: 'guestAccess', middleware: guestAccess, allowed: ['admin', 'manager', 'guest'] },
   { name: 'adminAccess', middleware: adminAccess, allowed: ['admin'] },
-  { name: 'rolesAccess', middleware: rolesAccess('guest', 'foreign'), allowed: ['guest', 'foreign'] },
+  { name: 'rolesAccess', middleware: rolesAccess('user'), allowed: ['user'] },
 ];
 
 describe('Composable route access middleware', () => {
@@ -40,7 +36,7 @@ describe('Composable route access middleware', () => {
     for (const policy of policies) {
       server.get(`/${policy.name}`, { preHandler: policy.middleware }, async () => ({ allowed: true }));
     }
-    server.get('/combined', { preHandler: [authenticatedAccess, rolesAccess('foreign')] }, async () => ({ allowed: true }));
+    server.get('/combined', { preHandler: [authenticatedAccess, rolesAccess('user')] }, async () => ({ allowed: true }));
     await server.ready();
   });
 
@@ -61,7 +57,7 @@ describe('Composable route access middleware', () => {
   it('supports Fastify preHandler arrays and grants only explicitly listed roles', async () => {
     for (const role of ['anonymous', ...userRoles]) {
       const response = await server.inject({ method: 'GET', url: '/combined', headers: { 'test-actor-role': role } });
-      expect(response.statusCode, response.body).toBe(role === 'foreign' ? 200 : role === 'anonymous' ? 401 : 403);
+      expect(response.statusCode, response.body).toBe(role === 'user' ? 200 : role === 'anonymous' ? 401 : 403);
     }
   });
 
@@ -72,8 +68,8 @@ describe('Composable route access middleware', () => {
     expect(() => rolesAccess('administrator')).toThrow(/at least one known role/);
   });
 
-  it('does not recognize historical audit role names as current account roles', () => {
-    for (const value of ['operator', 'subscriber', 'ADMIN', '', null, undefined, 1]) {
+  it('does not recognize removed or misspelled role names', () => {
+    for (const value of ['manager', 'guest', 'foreign', 'ADMIN', '', null, undefined, 1]) {
       expect(isUserRole(value)).toBe(false);
     }
   });
@@ -81,18 +77,18 @@ describe('Composable route access middleware', () => {
 
 describe('Framework-independent role policy', () => {
   it('returns an authorized actor for use by application services', () => {
-    const actor: Actor = { id: 'manager-account', role: 'manager' };
-    expect(requireRole(actor, 'admin', 'manager')).toBe(actor);
+    const actor: Actor = { id: 'user-account', role: 'user' };
+    expect(requireRole(actor, 'admin', 'user')).toBe(actor);
   });
 
   it.each(userRoles)('requires explicit inclusion of %s without implicit admin bypass', (role: UserRole) => {
     const actor: Actor = { id: 'account', role };
-    if (role === 'foreign') expect(requireRole(actor, 'foreign')).toBe(actor);
-    else expect(() => requireRole(actor, 'foreign')).toThrow(expect.objectContaining({ statusCode: 403 }));
+    if (role === 'user') expect(requireRole(actor, 'user')).toBe(actor);
+    else expect(() => requireRole(actor, 'user')).toThrow(expect.objectContaining({ statusCode: 403 }));
   });
 
   it('distinguishes a missing identity from insufficient privileges', () => {
     expect(() => requireRole(null, 'admin')).toThrow(expect.objectContaining({ statusCode: 401 }));
-    expect(() => requireRole({ id: 'account', role: 'guest' }, 'admin')).toThrow(expect.objectContaining({ statusCode: 403 }));
+    expect(() => requireRole({ id: 'account', role: 'user' }, 'admin')).toThrow(expect.objectContaining({ statusCode: 403 }));
   });
 });

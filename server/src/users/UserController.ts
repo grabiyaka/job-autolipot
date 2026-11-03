@@ -1,6 +1,6 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { ApplicationError } from '../../framework/core/errors.js';
-import type { UserApi, UserLoginInput } from './UserTypes.js';
+import type { UserApi, UserLoginInput, UserRegisterInput, UserSession } from './UserTypes.js';
 
 export type UserCookieOptions = Readonly<{ name: string; secure: boolean }>;
 
@@ -8,7 +8,15 @@ export class UserController {
   constructor(private readonly users: UserApi, private readonly cookie: UserCookieOptions) {}
 
   login = async (request: FastifyRequest<{ Body: UserLoginInput }>, reply: FastifyReply) => {
-    const session = await this.users.login(request.body);
+    return this.startSession(reply, await this.users.login(request.body));
+  };
+
+  register = async (request: FastifyRequest<{ Body: UserRegisterInput }>, reply: FastifyReply) => {
+    reply.code(201);
+    return this.startSession(reply, await this.users.register(request.body));
+  };
+
+  private startSession = async (reply: FastifyReply, session: UserSession) => {
     const expires = new Date(session.expiresAt);
     const token = await reply.jwtSign({ sub: session.user.id, sid: session.id, exp: Math.floor(expires.getTime() / 1000) });
     reply.header('Cache-Control', 'no-store');

@@ -1,12 +1,1 @@
-{
-  "domains": [
-    {
-      "model": "Task",
-      "domain": "tasks",
-      "route": "/api/tasks",
-      "read": ["id", "title", "description", "completed", "priority", "status", "dueAt", "tags", "createdAt", "updatedAt"],
-      "create": ["title", "description", "completed", "priority", "status", "dueAt", "tags"],
-      "update": ["title", "description", "completed", "priority", "status", "dueAt", "tags"]
-    }
-  ]
-}
+{ "domains": [] }

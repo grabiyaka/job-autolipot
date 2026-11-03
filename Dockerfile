@@ -24,6 +24,7 @@ COPY --from=build --chown=node:node /app/server/prisma ./prisma
 COPY --from=build --chown=node:node /app/server/prisma.config.ts ./prisma.config.ts
 COPY --from=build --chown=node:node /app/server/package.json ./package.json
 COPY --from=build --chown=node:node /app/client/dist /app/client/dist
+RUN mkdir -p /app/server/data && chown node:node /app/server/data
 USER node
 EXPOSE 3400
-CMD ["sh", "-c", "npm run db:migrate && node dist/prisma/seed.js && node dist/server.js"]
+CMD ["sh", "-c", "npm run db:migrate && node dist/server.js"]

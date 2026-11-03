@@ -35,20 +35,13 @@ describe('Account credentials', () => {
   });
 
   it('requires a strong initial password, meaningful name, and consistent account role', () => {
-    const input = { email: 'user@example.test', name: 'Test user', password: 'A-long-initial-password', role: 'manager' } as const;
+    const input = { email: 'user@example.test', name: 'Test user', password: 'A-long-initial-password', role: 'user' } as const;
     expect(() => requireAccountDetails(input)).not.toThrow();
     expect(() => requireAccountDetails({ ...input, password: 'short' })).toThrow();
     expect(() => requireAccountDetails({ ...input, password: 'a'.repeat(129) })).toThrow();
     expect(() => requireAccountDetails({ ...input, name: '   ' })).toThrow();
-    for (const role of ['admin', 'manager', 'guest', 'foreign'] as const) {
+    for (const role of ['admin', 'user'] as const) {
       expect(() => requireAccountDetails({ ...input, role })).not.toThrow();
-    }
-    for (const role of ['admin', 'manager', 'foreign'] as const) {
-      expect(() => requireAccountDetails({ ...input, role, subscriberId: 'a-subscriber' })).toThrow();
-    }
-    expect(() => requireAccountDetails({ ...input, role: 'guest', subscriberId: 'a-subscriber' })).not.toThrow();
-    for (const subscriberId of ['', '   ']) {
-      expect(() => requireAccountDetails({ ...input, role: 'guest', subscriberId })).toThrow();
     }
     // @ts-expect-error Unknown roles must be rejected both by TypeScript and at runtime.
     expect(() => requireAccountDetails({ ...input, role: 'owner' })).toThrow();

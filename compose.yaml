@@ -1,24 +1,9 @@
-name: jwx-framework
+name: job-autopilot
 services:
-  database:
-    image: postgres:17-bookworm
-    environment:
-      POSTGRES_USER: framework
-      POSTGRES_PASSWORD: framework_demo
-      POSTGRES_DB: framework_demo
-    ports:
-      - "127.0.0.1:${DATABASE_PORT:-5547}:5432"
-    volumes:
-      - framework_database:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U framework -d framework_demo"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
   api:
     build: .
     environment:
-      DATABASE_URL: postgresql://framework:framework_demo@database:5432/framework_demo
+      DATABASE_URL: file:/app/server/data/job-autopilot.db
       HOST: 0.0.0.0
       PORT: 3400
       JWT_SECRET: ${JWT_SECRET:?Run npm run setup to create .env}
@@ -28,9 +13,8 @@ services:
       JWT_TTL_SECONDS: ${JWT_TTL_SECONDS:-3600}
     ports:
       - "127.0.0.1:${APP_PORT:-3400}:3400"
-    depends_on:
-      database:
-        condition: service_healthy
+    volumes:
+      - job_autopilot_data:/app/server/data
     init: true
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3400/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
@@ -39,4 +23,4 @@ services:
       retries: 15
       start_period: 20s
 volumes:
-  framework_database:
+  job_autopilot_data:

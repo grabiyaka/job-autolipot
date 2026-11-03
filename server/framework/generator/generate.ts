@@ -76,8 +76,8 @@ export async function generateDomains(options: GenerateDomainsOptions = {}) {
   }
   // Pinned to the same Prisma version as the client. No handwritten schema parser.
   const schemaConfig = await prismaInternals.getConfig({ datamodel });
-  if (schemaConfig.datasources.length !== 1 || schemaConfig.datasources[0]?.provider !== 'postgresql') {
-    throw new Error('Domain generation currently supports a single PostgreSQL datasource.');
+  if (schemaConfig.datasources.length !== 1 || !['postgresql', 'sqlite'].includes(schemaConfig.datasources[0]?.provider ?? '')) {
+    throw new Error('Domain generation currently supports a single PostgreSQL or SQLite datasource.');
   }
   const metadata = await prismaInternals.getDMMF({ datamodel });
   const domains = normalizeDomains(metadata.datamodel, config);

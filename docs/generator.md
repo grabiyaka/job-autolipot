@@ -6,8 +6,13 @@
 Из одних метаданных Prisma получаются TypeScript DTO, проверки сервиса и JSON-схемы HTTP.
 Бизнес-правила и права доступа определяет приложение.
 
+**Когда генератор подходит.** Сгенерированный `list` возвращает все записи таблицы и не фильтрует
+их по владельцу. В job-autopilot почти все данные принадлежат пользователю (`jobs.userId`,
+`answers.userId`), поэтому эти домены пишутся вручную по [соглашениям архитектуры](architecture.md).
+Генератор годится для общих справочников без владельца. Сейчас `domains.json` пуст.
+
 Пути внутри backend ниже указаны относительно `server`, а команды запускаются
-из корня репозитория. Например, `src/tasks` означает `server/src/tasks`.
+из корня репозитория. Например, `src/users` означает `server/src/users`.
 
 ## Команды
 
@@ -31,7 +36,7 @@ npm --prefix server run domain:check -- --root /path/to/project/server
 
 ## Описать новый домен
 
-Ниже условный новый домен `projects`; готовый пример в репозитории — `tasks`.
+Ниже условный новый домен `projects`.
 Добавь модель в схему приложения:
 
 ```prisma
@@ -40,7 +45,7 @@ model Project {
   title     String
   summary   String?
   archived  Boolean  @default(false)
-  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  createdAt DateTime @default(now())
 }
 ```
 
@@ -120,13 +125,10 @@ const projects = new ProjectService(
     switch (operation) {
       case 'list':
       case 'get':
-        requireRole(actor, 'admin', 'manager', 'guest');
-        break;
-      case 'delete':
-        requireRole(actor, 'admin');
+        requireRole(actor, 'admin', 'user');
         break;
       default:
-        requireRole(actor, 'admin', 'manager');
+        requireRole(actor, 'admin');
     }
   },
 );
@@ -149,8 +151,7 @@ registerProjectRoutes(server, projects, (request) => requireActor(request.actor)
 
 ```ts
 import { adminAccess } from '../../middlewares/adminAccess.js';
-import { generalAccess } from '../../middlewares/generalAccess.js';
-import { guestAccess } from '../../middlewares/guestAccess.js';
+import { authenticatedAccess } from '../../middlewares/authenticatedAccess.js';
 
 export function registerProjectRoutes<Context>(
   server: FastifyInstance,
@@ -158,10 +159,10 @@ export function registerProjectRoutes<Context>(
   context: (request: FastifyRequest) => Context | Promise<Context>,
 ): void {
   const access = {
-    list: guestAccess,
-    get: guestAccess,
-    create: generalAccess,
-    update: generalAccess,
+    list: authenticatedAccess,
+    get: authenticatedAccess,
+    create: adminAccess,
+    update: adminAccess,
     delete: adminAccess,
   } satisfies ProjectRouteAccess;
 
@@ -176,8 +177,7 @@ export function registerProjectRoutes<Context>(
 Если операция отсутствует в `access`, дополнительный `preHandler` для неё не добавляется.
 Это не отключает обязательную policy сервиса и функцию получения контекста.
 HTTP-уровни и policy должны выражать согласованные ограничения; авторизация сервиса
-защищает также прямые вызовы из другого домена. Матрица доступных middleware и вариант
-`rolesAccess('admin', 'guest')` описаны в [руководстве авторизации](authentication.md#роли-и-middleware-в-маршрутах).
+защищает также прямые вызовы из другого домена. Доступные middleware описаны в [руководстве авторизации](authentication.md#роли-и-middleware-в-маршрутах).
 Изменение ручных правил доступа не требует редактирования защищённых блоков или хешей.
 
 Текущий `app.ts` задаёт Fastify `removeAdditional: false` и `coerceTypes: false`.
@@ -208,10 +208,11 @@ Policy имеет форму `(operation, context) => void | Promise<void>`: о�
 вложенные JSON null разрешены. Отдельного публичного маркера `Prisma.JsonNull` нет.
 Дата внутри приложения использует миллисекундную точность JavaScript; произвольная точность БД
 через этот API не предоставляется. Для Decimal без явного `@db.Decimal` учитывается `(65, 30)`
-согласно [соответствию типов Prisma и PostgreSQL](https://www.prisma.io/docs/orm/v7/reference/prisma-schema-reference).
+согласно [справочнику схемы Prisma](https://www.prisma.io/docs/orm/v7/reference/prisma-schema-reference).
 
-Поддерживается один PostgreSQL datasource и один ID типа `String` или `Int`.
-Для выбранных полей разрешены native-типы: `Text`, `VarChar`, `Char`, `Uuid`, `Integer`,
+Поддерживается один datasource PostgreSQL или SQLite (приложение использует SQLite)
+и один ID типа `String` или `Int`. В SQLite native-атрибуты `@db.*` не используются.
+Для PostgreSQL у выбранных полей разрешены native-типы: `Text`, `VarChar`, `Char`, `Uuid`, `Integer`,
 `SmallInt`, `DoublePrecision`, `Boolean`, `BigInt`, `Decimal`, `Timestamp`, `Timestamptz`,
 `Json`, `JsonB`, `ByteA` — каждый только для соответствующего Prisma-типа.
 Явная точность Timestamp/Timestamptz ниже 3 отклоняется. Остальные native-типы,
@@ -239,23 +240,3 @@ Relation-поля и вложенные `connect/create/update` не генер�
 проверяются при разработке, автоматически генератор их не обеспечивает.
 Метаданные читаются через `getDMMF` из `@prisma/internals`, закреплённого на **7.10.0**
 вместе с Prisma. Это внутренний API Prisma: обновление версии требует проверки генератора.
-
-## Работающий пример `tasks`
-
-[Модель](../server/prisma/schema.prisma), [списки полей](../server/prisma/domains.json) и
-[домен tasks](../server/src/tasks/TaskTypes.ts) уже подключены к приложению.
-В текущем приложении список и карточку читают admin/manager/guest, создавать и изменять
-задачи могут admin/manager, удалять — только admin. У foreign доступа к задачам нет.
-HTTP-уровни заданы в ручной секции `TaskRoutes.ts`; сервис проверяет ту же политику
-при любой точке входа. Названия ролей принадлежат приложению и не встроены в генератор.
-Схемы и вызовы доступны в [Swagger](http://localhost:3400/docs).
-Войди через клиент на том же origin: Swagger использует установленную cookie.
-Клиентская страница задач демонстрирует CRUD этого домена.
-
-| HTTP | Результат |
-| --- | --- |
-| `GET /api/tasks?page=1&limit=20` | `{ items, total, page, limit }`; лимит 1–100, порядок по ID. |
-| `GET /api/tasks/:id` | Запись или 404. |
-| `POST /api/tasks` | Создание, 201; минимальное тело `{ "title": "Проверить генератор" }`. |
-| `PATCH /api/tasks/:id` | Частичное изменение, 200. |
-| `DELETE /api/tasks/:id` | Удаление, 204 без тела ответа. |

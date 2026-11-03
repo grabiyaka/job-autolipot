@@ -98,14 +98,22 @@ describe('Domain generator command line', () => {
     expect(await readdir(root)).toEqual([]);
   });
 
-  it.each(['mysql', 'sqlite'])('rejects a %s datasource before generating output', async provider => {
+  it.each(['mysql'])('rejects a %s datasource before generating output', async provider => {
     const root = await temporaryRoot();
     const args = await createFixture(root, provider);
     const result = await runCli(args);
     expect(result.status, result.stderr).toBe(1);
-    expect(result.stderr).toContain('PostgreSQL');
+    expect(result.stderr).toContain('PostgreSQL or SQLite');
     expect(await readdir(root)).not.toContain('src');
   });
+
+  it('generates a domain from a SQLite datasource used by the application', async () => {
+    const root = await temporaryRoot();
+    const args = await createFixture(root, 'sqlite');
+    const result = await runCli(args);
+    expect(result.status, result.stderr).toBe(0);
+    expect(Object.keys(await readOutput(root))).toHaveLength(6);
+  }, 30_000);
 
   it('rejects a malformed schema before generating output', async () => {
     const root = await temporaryRoot();

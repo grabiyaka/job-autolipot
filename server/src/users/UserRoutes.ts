@@ -3,7 +3,7 @@ import { userRoles } from '../../framework/core/roles.js';
 import { errors } from '../../framework/http/error-schema.js';
 import { authenticatedAccess } from '../../middlewares/authenticatedAccess.js';
 import { publicAccess } from '../../middlewares/publicAccess.js';
-import type { UserApi, UserLoginInput } from './UserTypes.js';
+import type { UserApi, UserLoginInput, UserRegisterInput } from './UserTypes.js';
 import { UserController } from './UserController.js';
 import type { UserCookieOptions } from './UserController.js';
 
@@ -13,6 +13,11 @@ const userSchema = {
     id: { type: 'string' }, email: { type: 'string' }, name: { type: 'string' },
     role: { type: 'string', enum: userRoles },
   },
+} as const;
+
+const sessionSchema = {
+  type: 'object', additionalProperties: false, required: ['user', 'expiresAt'],
+  properties: { user: userSchema, expiresAt: { type: 'string', format: 'date-time' } },
 } as const;
 
 export function registerUserRoutes(server: FastifyInstance, users: UserApi, cookie: UserCookieOptions): void {
@@ -29,14 +34,25 @@ export function registerUserRoutes(server: FastifyInstance, users: UserApi, cook
           password: { type: 'string', minLength: 1, maxLength: 128 },
         },
       },
-      response: {
-        200: {
-          type: 'object', additionalProperties: false, required: ['user', 'expiresAt'],
-          properties: { user: userSchema, expiresAt: { type: 'string', format: 'date-time' } },
-        }, ...errors,
-      },
+      response: { 200: sessionSchema, ...errors },
     },
   }, controller.login);
+  server.post<{ Body: UserRegisterInput }>('/api/auth/register', {
+    preHandler: publicAccess,
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+    schema: {
+      tags: ['Auth'], summary: 'Регистрация обычного пользователя; сразу открывает сессию', security: [],
+      body: {
+        type: 'object', additionalProperties: false, required: ['email', 'name', 'password'],
+        properties: {
+          email: { type: 'string', minLength: 3, maxLength: 254 },
+          name: { type: 'string', minLength: 1, maxLength: 120 },
+          password: { type: 'string', minLength: 12, maxLength: 128 },
+        },
+      },
+      response: { 201: sessionSchema, ...errors },
+    },
+  }, controller.register);
   server.get('/api/auth/me', {
     preHandler: authenticatedAccess,
     schema: {

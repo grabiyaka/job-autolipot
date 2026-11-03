@@ -9,11 +9,8 @@ export type UserProfile = Readonly<{
 }>;
 
 export type UserLoginInput = Readonly<{ email: string; password: string }>;
-export type UserCreateInput = UserLoginInput & Readonly<{
-  name: string;
-  role: UserRole;
-  subscriberId?: string;
-}>;
+export type UserRegisterInput = UserLoginInput & Readonly<{ name: string }>;
+export type UserCreateInput = UserRegisterInput & Readonly<{ role: UserRole }>;
 export type UserSession = Readonly<{
   id: string;
   user: UserProfile;
@@ -23,6 +20,8 @@ export type UserSession = Readonly<{
 
 export interface UserApi {
   login(input: UserLoginInput): Promise<UserSession>;
+  /** Public sign-up: always creates a regular user and opens a session. */
+  register(input: UserRegisterInput): Promise<UserSession>;
   session(sessionId: string, userId: string): Promise<UserSession | null>;
   logout(sessionId: string): Promise<void>;
   create(input: UserCreateInput): Promise<UserProfile>;

@@ -37,7 +37,7 @@ export async function buildServer(options: ApplicationOptions) {
     });
     await server.register(swagger, {
       openapi: {
-        info: { title: 'Framework · API examples', version: '0.3.0', description: 'Универсальный каркас: генерируемый CRUD задач и примеры предметных сценариев. Только синтетические данные.' },
+        info: { title: 'job-autopilot API', version: '0.1.0', description: 'Сбор вакансий, отбор и подача откликов.' },
         components: { securitySchemes: {
           bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
           cookieAuth: { type: 'apiKey', in: 'cookie', name: SESSION_COOKIE },

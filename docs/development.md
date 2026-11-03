@@ -1,22 +1,33 @@
-# jwx-framework
+# Разработка: запуск, структура, проверки
 
-Универсальная основа приложения: **Vue 3 Options API**, **Fastify 5**, **Prisma 7**,
-**PostgreSQL 17** и строгий **TypeScript**. Явный DI сохраняет автокомплит, домены содержат
-свои маршруты, а бизнес-правила читаются отдельно от HTTP и хранения данных.
+Стек: **Vue 3 Options API**, **Fastify 5**, **Prisma 7**, **SQLite** и строгий **TypeScript**.
+Каркас взят из jwx-framework. Явный DI сохраняет автокомплит, каждый домен держит свои маршруты,
+бизнес-правила лежат отдельно от HTTP и хранения. Соглашения описаны в [architecture.md](architecture.md).
 
-Клиент показывает вход по JWT и работающий CRUD задач: список, создание, изменение и удаление.
-Серверные домены `subscribers`, `readings` и `transactions` сохранены как предметные примеры.
-Сущности и роли примеров не определяют архитектуру будущих приложений.
+## Локальный запуск
 
-В [песочнице моделей](sandbox/water-billing/README.md) можно сравнивать реализацию
-бизнес-сценария разными LLM на одинаковых Rules, сущностях и тестах PostgreSQL.
-[Расширенный отчёт эксперимента](sandbox/water-billing/series-2/reports/REPORT.md) содержит результаты,
-ревью, токены и оценку стоимости. Песочница использует отдельные БД и не подключена
-к рабочим маршрутам приложения.
+Нужен Node.js 22.12 или новее. Отдельный сервер БД не нужен: SQLite — это файл
+`server/data/job-autopilot.db`. Команды выполняются из корня:
 
-## Запуск в Docker
+```bash
+npm run setup          # .env из .env.example со случайным JWT_SECRET; существующий не трогает
+npm run install:all    # зависимости server и client по их lock-файлам
+npm run db:generate    # Prisma Client и сгенерированные домены
+npm run db:migrate     # создаёт или обновляет файл БД (prisma migrate deploy)
+npm run dev            # API на :3400 и Vite на :5173 с автообновлением
+```
 
-Нужны Docker Compose и Node.js 22.12 или новее для команд настройки.
+Открой [localhost:5173](http://localhost:5173) и зарегистрируйся на странице `/register`.
+Vite проксирует `/api` на backend, JWT лежит в HttpOnly cookie, в localStorage ничего не хранится.
+
+Администратора создаёт CLI. Пароль он спрашивает в терминале:
+
+```bash
+npm --prefix server run build
+npm run user:create -- --email admin@example.com --name Admin --role admin
+```
+
+## Docker
 
 ```bash
 npm run setup
@@ -24,130 +35,87 @@ docker compose up --build -d --wait
 docker compose exec api npm run user:create -- --email admin@example.com --name Admin --role admin
 ```
 
-`setup` создаёт локальный `.env` со случайным JWT-секретом и не перезаписывает существующий файл.
-Команда `user:create` спрашивает пароль в терминале: от 12 до 128 символов.
-В примере явно создаётся `admin`; без `--role` команда создаёт `manager`.
-Общего пароля и публичной регистрации нет.
+В контейнере Fastify отдаёт клиентскую сборку и API с одного адреса: [localhost:3400](http://localhost:3400).
+При старте контейнер применяет миграции. Файл БД лежит в томе `job_autopilot_data`, поэтому
+`docker compose down` данные сохраняет, а `down -v` удаляет их вместе с томом.
 
-Открой [приложение](http://localhost:3400), войди созданным пользователем и попробуй задачи.
-[Swagger](http://localhost:3400/docs) использует тот же вход;
-[health](http://localhost:3400/api/health) проверяет API и соединение с БД.
-В Docker Fastify отдаёт клиентскую сборку и API с одного адреса.
+Полезные адреса: [Swagger](http://localhost:3400/docs) (использует cookie текущего входа)
+и [health](http://localhost:3400/api/health) (API и соединение с БД).
 
-Повторный запуск сохраняет пользователей, задачи и историю в PostgreSQL.
-`docker compose down` останавливает приложение без удаления данных; `down -v` удаляет том.
-Имя Compose-проекта задаётся `COMPOSE_PROJECT_NAME` и по умолчанию равно `jwx-framework`.
-При обновлении существующей установки сохрани её прежнее имя в локальном `.env`,
-чтобы продолжить использовать тот же том БД.
+## Настройки `.env`
+
+| Переменная | Назначение |
+| --- | --- |
+| `DATABASE_URL` | SQLite в форме `file:<путь>`; относительный путь считается от `server/`. По умолчанию `file:./data/job-autopilot.db`. |
+| `JWT_SECRET` | Обязательный случайный секрет, минимум 32 байта. |
+| `JWT_TTL_SECONDS` | Срок сессии, по умолчанию `3600`, допустимо от `60` до `86400`. |
+| `APP_ORIGIN` | Публичный origin приложения, например `http://localhost:3400`. |
+| `AUTH_ALLOWED_ORIGINS` | Дополнительные разрешённые origins через запятую, например Vite `http://localhost:5173`. |
+| `COOKIE_SECURE` | `true` для HTTPS, `false` для локального HTTP. |
+| `PORT`, `HOST` | Адрес API, по умолчанию `127.0.0.1:3400`. |
+| `APP_PORT`, `COMPOSE_PROJECT_NAME` | Опубликованный порт и имя установки Docker Compose. |
+
+Подробнее про вход и cookie — в [authentication.md](authentication.md).
 
 ## Структура
 
 ```text
 client/
-  src/components/      страницы по сущностям и общие UI-компоненты
+  src/components/      страницы по сущностям (jobs, user) и общие ui-компоненты
   src/store/           Pinia
   src/router/          Vue Router
   src/assets/css/      общие стили и SCSS-миксины
 server/
-  src/                 плоские домены: tasks, readings, transactions…
-  framework/           core, composition, HTTP и генератор
-  plugins/             недоменные технические возможности
+  src/                 плоские домены; сейчас users
+  framework/           core, composition, http и генератор
+  plugins/             технические возможности: БД, пароли, клиент, системные маршруты
   middlewares/         идентификация и уровни HTTP-доступа
-  prisma/              модель, миграции и конфигурация CRUD
-  generated/           воспроизводимый Prisma Client, вне Git
-Dockerfile             общая сборка frontend и backend
-compose.yaml           приложение и PostgreSQL
-docs/                  соглашения и руководства
-AGENTS.md              инструкции и ссылки на документацию
+  prisma/              схема, миграции, domains.json для генератора
+  data/                файл SQLite, вне Git
+  generated/           Prisma Client, вне Git
+docs/                  документация
+Dockerfile             общая сборка клиента и сервера
+compose.yaml           приложение и том с БД
 ```
 
-Клиентские компоненты используют `data`, `computed`, `methods` и lifecycle Options API.
-SCSS вложен в корневой класс компонента, общие поля и кнопки описаны один раз,
-а responsive-миксины расположены рядом со стилями соответствующего элемента.
+Модель данных описана в [server/prisma/schema.prisma](../server/prisma/schema.prisma),
+кому какие данные принадлежат — в [README](../README.md#пользователи-и-данные).
 
-На сервере зависимости передаются через типизированные конструкторы.
-Сервису доступны его репозиторий через контракт и публичные API нужных доменов;
-контроллер не получает репозитории. Маршруты и JSON-схемы лежат вместе в `*Routes.ts`.
-`*Rules.ts` содержит понятные шаги, технические преобразования — именованные помощники.
+## Миграции
 
-Роли приложения — `admin`, `manager`, `guest`, `foreign`. Отдельные middleware
-`publicAccess`, `authenticatedAccess`, `guestAccess`, `generalAccess`, `adminAccess`
-и `rolesAccess` импортируются прямо в доменные роуты и подключаются через `preHandler`.
-В задачах гость читает, менеджер также создаёт и меняет записи, администратор может удалять.
-`foreign` имеет вход и профиль, но не доступ к задачам. Матрица и примеры —
-в [руководстве авторизации](docs/authentication.md#роли-и-middleware-в-маршрутах).
-
-## Локальная разработка
-
-У клиента и сервера отдельные зависимости и lock-файлы. Все следующие команды выполняются из корня:
+Схема меняется через Prisma, каждая миграция хранится в Git:
 
 ```bash
-npm run setup
-npm run install:all
-docker compose up -d --wait database
-npm run db:generate
-npm run db:migrate
-npm run db:seed
-npm run build
-npm run user:create -- --email admin@example.com --name Admin --role admin
-npm run dev
+cd server
+DATABASE_URL=file:./data/job-autopilot.db npx prisma migrate dev --name <что-изменилось>
 ```
 
-Клиент работает на [localhost:5173](http://localhost:5173), API — на `localhost:3400`.
-Vite проксирует `/api` на backend; JWT передаётся в HttpOnly cookie, без хранения в localStorage.
-`npm run dev` запускает обе части с автоматическим обновлением.
-Если контейнер API уже занимает 3400, предварительно останови его: `docker compose stop api`.
-
-В `.env` находятся `DATABASE_URL`, `JWT_SECRET`, `APP_ORIGIN`, дополнительные разрешённые
-origins разработки и параметры cookie. `APP_PORT` и `DATABASE_PORT` задают опубликованные
-порты Docker. Для HTTPS-развёртывания настрой origin и secure-cookie.
-Подробности, срок сессии и создание других ролей — в [руководстве авторизации](docs/authentication.md).
+`migrate dev` применяется к локальной БД разработки. Docker и CI запускают только `migrate deploy`.
+Не удаляй файл БД и не делай `migrate reset` ради чистого старта: тесты используют свою временную БД.
 
 ## Генератор доменов
 
-Типы полей берутся из `server/prisma/schema.prisma`; `server/prisma/domains.json` выбирает
-поля и операции CRUD. Генератор создаёт шесть плоских файлов домена: DTO в `*Types.ts`,
-JSON-схемы в `*Routes.ts` и остальные слои. Повторное описание типов вручную не требуется.
-
-```bash
-npm run db:generate
-npm run domain:check
-```
-
-`db:generate` обновляет Prisma Client и домены; `domain:generate` запускает только генератор доменов.
-Ручные расширения вне защищённых блоков сохраняются. Миграции, подключение нового домена
-и его политика доступа остаются явными. Подробнее — [генератор доменов](docs/generator.md).
+Типы полей берутся из `schema.prisma`, а `prisma/domains.json` выбирает поля и операции CRUD.
+Сейчас список пуст. Домены вакансий пишутся вручную, потому что сгенерированный CRUD
+не фильтрует записи по владельцу. Генератор остаётся для простых справочников.
+Подробнее — в [generator.md](generator.md).
 
 ## Проверки
 
 ```bash
-npm run check
-# Отдельно:
-npm run check:server
-npm run check:client
+npm run check          # обе части
+npm run check:server   # генерация, TypeScript, архитектурные границы, тесты, сборка
+npm run check:client   # типы Vue, соглашения кода и стилей, тесты, сборка
 ```
 
-Сервер проверяет актуальность генерации, TypeScript, архитектурные границы, тесты и сборку.
-Клиент проверяет типы Vue, соглашения кода и стилей, тесты и сборку.
-Для PostgreSQL-интеграций нужна отдельная БД; без `TEST_DATABASE_URL` они пропускаются:
-
-```bash
-docker compose exec -T database createdb -U framework framework_test
-DATABASE_URL=postgresql://framework:framework_demo@localhost:5547/framework_test npm run db:migrate
-TEST_DATABASE_URL=postgresql://framework:framework_demo@localhost:5547/framework_test npm run check:server
-```
-
-`createdb` нужен один раз. Тесты не требуют удаления рабочей БД или её истории.
-GitHub Actions выполняет проверки обеих частей с Node.js 22 и отдельным PostgreSQL 17.
+Интеграционные тесты сервера сами создают временный файл SQLite, накатывают на него миграции
+и удаляют его после прогона. Рабочую БД и `DATABASE_URL` они не трогают.
+GitHub Actions запускает эти же проверки на Node.js 22.
 
 ## Документация
 
-- [Архитектура](docs/architecture.md) — структура, нейминг, зависимости и бизнес-слой.
-- [Клиент](docs/frontend.md) — Options API, состояние, SCSS и responsive-миксины.
-- [Авторизация](docs/authentication.md) — JWT, cookie, сессии и пользователи.
-- [Генератор](docs/generator.md) — Prisma как источник DTO и схем, ручные расширения.
-- [Пример Vodogon](docs/examples/vodogon.md) — правила сохранённых предметных доменов.
-- [AGENTS.md](AGENTS.md) — инструкции для изменений в репозитории.
-
-Общая основа ещё содержит прикладную модель актора и конкретную сборку примеров.
-Их выделение описано как дальнейшая работа, а не как уже готовое независимое ядро.
+- [Архитектура](architecture.md) — структура, нейминг, DI и бизнес-слой.
+- [Клиент](frontend.md) — Options API, состояние, SCSS и адаптивность.
+- [Авторизация](authentication.md) — регистрация, JWT, cookie, сессии и роли.
+- [Генератор](generator.md) — Prisma как источник DTO и схем.
+- [План сборщика](collector-plan.md) — модульная архитектура источников вакансий.

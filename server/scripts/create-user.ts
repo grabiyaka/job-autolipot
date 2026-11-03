@@ -30,20 +30,16 @@ async function readPassword(prompt: string): Promise<string> {
 
 async function main(): Promise<void> {
   const { values } = parseArgs({ options: {
-    email: { type: 'string' }, name: { type: 'string' }, role: { type: 'string', default: 'manager' },
-    'subscriber-id': { type: 'string' }, help: { type: 'boolean' },
+    email: { type: 'string' }, name: { type: 'string' }, role: { type: 'string', default: 'user' }, help: { type: 'boolean' },
   } });
   if (values.help) {
-    console.log(`npm run user:create -- --email user@example.com --name User [--role ${userRoles.join('|')}] [--subscriber-id ID]`);
-    console.log('Роль по умолчанию: manager. Необязательная связь --subscriber-id доступна только роли guest для предметного примера.');
+    console.log(`npm run user:create -- --email user@example.com --name User [--role ${userRoles.join('|')}]`);
+    console.log('Роль по умолчанию: user. Администратора создавайте явно через --role admin.');
     console.log('Пароль: скрытый интерактивный ввод либо одна строка через stdin. Параметр --password не поддерживается.');
     return;
   }
   if (!values.email || !values.name) throw new Error('Укажите --email и --name. Справка: npm run user:create -- --help.');
   if (!isUserRole(values.role)) throw new Error(`Роль должна быть одной из: ${userRoles.join(', ')}.`);
-  if (values['subscriber-id'] !== undefined && (values.role !== 'guest' || !values['subscriber-id'].trim())) {
-    throw new Error('--subscriber-id принимает непустой ID и доступен только роли guest.');
-  }
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error('DATABASE_URL is required in ../.env or the process environment.');
   const password = await readPassword('Пароль (12–128 символов): ');
@@ -52,7 +48,6 @@ async function main(): Promise<void> {
   try {
     const user = await administration.users.create({
       email: values.email, name: values.name, role: values.role, password,
-      ...(values['subscriber-id'] ? { subscriberId: values['subscriber-id'] } : {}),
     });
     console.log(`Пользователь создан: ${user.email} (${user.role}), id=${user.id}`);
   } finally { await administration.close(); }

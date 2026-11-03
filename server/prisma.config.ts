@@ -5,8 +5,8 @@ config({ path: '../.env', quiet: true });
 
 export default defineConfig({
   schema: 'prisma/schema.prisma',
-  migrations: { path: 'prisma/migrations', seed: 'tsx prisma/seed.ts' },
+  migrations: { path: 'prisma/migrations' },
   datasource: {
-    url: process.env.DATABASE_URL ?? 'postgresql://framework:framework_demo@localhost:5547/framework_demo',
+    url: process.env.DATABASE_URL ?? 'file:./data/job-autopilot.db',
   },
 });

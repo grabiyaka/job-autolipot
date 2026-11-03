@@ -12,7 +12,4 @@ export function requireAccountDetails(input: UserCreateInput): void {
   if (!isUserRole(input.role)) {
     throw new ApplicationError('INVALID_ROLE', 'Неизвестная роль пользователя.', 400);
   }
-  if (input.subscriberId !== undefined && (input.role !== 'guest' || !input.subscriberId.trim())) {
-    throw new ApplicationError('INVALID_SUBSCRIBER', 'Связь с абонентом доступна только роли guest и требует непустой ID.', 400);
-  }
 }

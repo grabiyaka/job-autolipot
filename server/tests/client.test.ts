@@ -24,7 +24,7 @@ describe('production client routing', () => {
   });
 
   it('serves the client and supports direct navigation to Vue routes', async () => {
-    for (const url of ['/', '/login', '/tasks', '/profile']) {
+    for (const url of ['/', '/login', '/jobs', '/profile']) {
       const response = await server.inject({ url, headers: { accept: 'text/html' } });
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain('Client application');
@@ -40,7 +40,7 @@ describe('production client routing', () => {
       expect(response.statusCode).toBe(404);
       expect(response.json()).toMatchObject({ error: { code: 'NOT_FOUND' } });
     }
-    expect((await server.inject({ method: 'POST', url: '/tasks', headers: { accept: 'text/html' } })).statusCode).toBe(404);
+    expect((await server.inject({ method: 'POST', url: '/jobs', headers: { accept: 'text/html' } })).statusCode).toBe(404);
     expect((await server.inject('/unrecognized-json-request')).statusCode).toBe(404);
     expect((await server.inject('/api/health')).json()).toEqual({ status: 'ok' });
   });
@@ -50,7 +50,7 @@ it('keeps the API error format when no client build exists during development', 
   const server = Fastify();
   try {
     await registerClient(server, join(tmpdir(), 'nonexistent-jwx-client-build'));
-    const response = await server.inject({ url: '/tasks', headers: { accept: 'text/html' } });
+    const response = await server.inject({ url: '/jobs', headers: { accept: 'text/html' } });
     expect(response.statusCode).toBe(404);
     expect(response.json()).toMatchObject({ error: { code: 'NOT_FOUND' } });
   } finally { await server.close(); }

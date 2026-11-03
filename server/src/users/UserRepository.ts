@@ -12,7 +12,7 @@ function session(id: string, user: User, expiresAt: Date): UserSession {
   return {
     id,
     user: profile(user),
-    actor: { id: user.id, role: user.role, ...(user.subscriberId ? { subscriberId: user.subscriberId } : {}) },
+    actor: { id: user.id, role: user.role },
     expiresAt: expiresAt.toISOString(),
   };
 }
@@ -22,7 +22,7 @@ export class UserRepository implements UserRepositoryContract {
 
   async findByEmail(email: string): Promise<UserCredentials | null> {
     const user = await this.prisma.user.findUnique({ where: { email } });
-    return user ? { user: profile(user), passwordHash: user.passwordHash, disabled: user.disabled, subscriberId: user.subscriberId } : null;
+    return user ? { user: profile(user), passwordHash: user.passwordHash, disabled: user.disabled } : null;
   }
 
   async create(input: Omit<UserCreateInput, 'password'>, passwordHash: string): Promise<UserProfile> {
@@ -31,7 +31,6 @@ export class UserRepository implements UserRepositoryContract {
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError) {
         if (error.code === 'P2002') throw new ApplicationError('EMAIL_EXISTS', 'Пользователь с таким email уже существует.', 409);
-        if (error.code === 'P2003') throw new ApplicationError('INVALID_SUBSCRIBER', 'Указанный абонент не существует.', 400);
       }
       throw error;
     }

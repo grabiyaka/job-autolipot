@@ -4,7 +4,6 @@ export type UserCredentials = Readonly<{
   user: UserProfile;
   passwordHash: string;
   disabled: boolean;
-  subscriberId: string | null;
 }>;
 
 export interface UserRepositoryContract {

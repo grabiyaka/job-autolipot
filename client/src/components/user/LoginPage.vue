@@ -1,13 +1,13 @@
 <template>
   <main class="login-page">
-    <section class="introduction" aria-label="JWX workspace">
-      <a class="brand" href="/">jwx<span>workspace</span></a>
+    <section class="introduction" aria-label="job-autopilot">
+      <a class="brand" href="/">autopilot<span>jobs</span></a>
       <div class="welcome">
-        <p class="eyebrow">Место для ваших идей</p>
-        <h1>Большие планы.<br /> Понятные шаги.</h1>
-        <p>Соберите задачи в одном месте.<br />Сосредоточьтесь на том, что важно.</p>
+        <p class="eyebrow">Поиск работы на автопилоте</p>
+        <h1>Вакансии со всех сайтов.<br /> В одном месте.</h1>
+        <p>Сбор, отбор по CV и отклики.<br />Вы отвечаете только на сложные вопросы.</p>
         <div class="illustration" aria-hidden="true">
-          <article class="preview-card"><span class="preview-icon"><AppIcon name="tasks" /></span><strong>От идеи — к результату</strong><span class="preview-completed"><AppIcon name="check" /> Первый шаг сделан</span></article>
+          <article class="preview-card"><span class="preview-icon"><AppIcon name="tasks" /></span><strong>Новые вакансии собраны</strong><span class="preview-completed"><AppIcon name="check" /> Отклик отправлен</span></article>
           <span class="floating-check"><AppIcon name="check" /></span>
         </div>
       </div>
@@ -16,16 +16,20 @@
     <section class="login-panel">
       <form class="login-form" @submit.prevent="submit">
         <span class="login-symbol"><AppIcon name="lock" /></span>
-        <p class="eyebrow">С возвращением</p>
-        <h2>Войдите в пространство</h2>
-        <p class="subtitle">Ваши задачи уже здесь. Продолжим?</p>
+        <p class="eyebrow">{{ registering ? 'Новый аккаунт' : 'С возвращением' }}</p>
+        <h2>{{ registering ? 'Регистрация' : 'Вход' }}</h2>
+        <p class="subtitle">{{ registering ? 'Пароль — от 12 символов.' : 'Ваши вакансии уже здесь.' }}</p>
         <p v-if="error" class="message error" role="alert">{{ error }}</p>
         <p v-else-if="$route.query.expired" class="message" role="status">Сессия завершилась. Войдите ещё раз.</p>
         <p v-else-if="$route.query.unavailable" class="message error" role="alert">Сервер временно недоступен. Попробуйте войти ещё раз.</p>
+        <label v-if="registering" class="field">Имя<input v-model.trim="name" type="text" name="name" autocomplete="name" placeholder="Как к вам обращаться" required :disabled="pending" /></label>
         <label class="field">Электронная почта<input v-model.trim="email" type="email" name="email" autocomplete="username" placeholder="you@company.com" required :disabled="pending" /></label>
-        <label class="field">Пароль<input v-model="password" type="password" name="password" autocomplete="current-password" placeholder="Введите пароль" required :disabled="pending" /></label>
-        <button class="button primary" type="submit" :disabled="pending || !email || !password">{{ pending ? 'Входим…' : 'Войти' }} <AppIcon name="arrow" /></button>
-        <p class="help">Нет доступа? Обратитесь к администратору<br />вашего рабочего пространства.</p>
+        <label class="field">Пароль<input v-model="password" type="password" name="password" :autocomplete="registering ? 'new-password' : 'current-password'" placeholder="Введите пароль" required :disabled="pending" /></label>
+        <button class="button primary" type="submit" :disabled="pending || !email || !password || (registering && !name)">{{ submitLabel }} <AppIcon name="arrow" /></button>
+        <p class="help">
+          <RouterLink v-if="registering" :to="{ path: '/login', query: $route.query }">Уже есть аккаунт? Войти</RouterLink>
+          <RouterLink v-else :to="{ path: '/register', query: $route.query }">Нет аккаунта? Зарегистрироваться</RouterLink>
+        </p>
       </form>
       <footer><AppIcon name="lock" /> Защищённое рабочее пространство</footer>
     </section>
@@ -42,19 +46,29 @@ import AppIcon from '@/components/ui/AppIcon.vue';
 
 export default defineComponent({
   components: { AppIcon },
-  data: () => ({ email: '', password: '', pending: false, error: '' }),
+  data: () => ({ name: '', email: '', password: '', pending: false, error: '' }),
+  computed: {
+    registering(): boolean {
+      return this.$route.path === '/register';
+    },
+    submitLabel(): string {
+      if (this.pending) return this.registering ? 'Создаём…' : 'Входим…';
+      return this.registering ? 'Создать аккаунт' : 'Войти';
+    },
+  },
   methods: {
-    ...mapActions(useUserStore, ['login']),
+    ...mapActions(useUserStore, ['login', 'register']),
     async submit() {
       if (this.pending) return;
       this.pending = true;
       this.error = '';
       try {
-        await this.login(this.email, this.password);
+        if (this.registering) await this.register(this.name, this.email, this.password);
+        else await this.login(this.email, this.password);
         this.password = '';
         await this.$router.replace(safeRedirect(this.$route.query.redirect));
       } catch (error) {
-        this.error = error instanceof ApiError && error.status === 401
+        this.error = !this.registering && error instanceof ApiError && error.status === 401
           ? 'Неверная почта или пароль. Проверьте данные и попробуйте снова.'
           : errorMessage(error);
       } finally {

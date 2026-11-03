@@ -1,8 +1,8 @@
-# Клиент универсального фреймворка
+# Клиент job-autopilot
 
 Перед изменениями прочитай [общие правила](../AGENTS.md),
 [соглашения frontend](../docs/frontend.md) и при изменении входа —
-[авторизацию](../docs/authentication.md). Команды запуска и проверок находятся в [README](../README.md).
+[авторизацию](../docs/authentication.md). Команды запуска и проверок находятся в [development.md](../docs/development.md).
 
 - Компоненты — Vue Options API с `defineComponent`, `data`, `computed`, `methods` и lifecycle.
   Не используй `<script setup>` или Composition API для логики компонентов.

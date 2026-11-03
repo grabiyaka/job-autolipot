@@ -67,7 +67,7 @@ export async function registerAuthentication(
       // Use Fastify's matched route; URL-encoded spelling must not bypass auth-route protection.
       const path = request.routeOptions.url;
       const cookieAuthentication = Boolean(request.cookies[SESSION_COOKIE]);
-      const browserMutation = cookieAuthentication || path === '/api/auth/login' || path === '/api/auth/logout';
+      const browserMutation = cookieAuthentication || (path !== undefined && ['/api/auth/login', '/api/auth/register', '/api/auth/logout'].includes(path));
       if (browserMutation && request.headers['sec-fetch-site'] === 'cross-site') {
         throw new ApplicationError('CSRF_REJECTED', 'Межсайтовый запрос не разрешён.', 403);
       }

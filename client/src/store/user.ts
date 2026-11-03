@@ -6,9 +6,7 @@ export type SessionUser = UserProfile;
 
 const roleLabels: Readonly<Record<SessionUser['role'], string>> = {
   admin: 'Администратор',
-  manager: 'Менеджер',
-  guest: 'Гость',
-  foreign: 'Доступ не выдан',
+  user: 'Пользователь',
 };
 
 export const useUserStore = defineStore('user', {
@@ -17,11 +15,6 @@ export const useUserStore = defineStore('user', {
     authenticated: (state) => state.user !== null,
     roleLabel: (state) => state.user ? roleLabels[state.user.role] : '',
     adminAccess: (state) => state.user?.role === 'admin',
-    generalAccess: (state) => state.user?.role === 'admin' || state.user?.role === 'manager',
-    guestAccess: (state) => state.user?.role === 'admin' || state.user?.role === 'manager' || state.user?.role === 'guest',
-    canReadTasks(): boolean { return this.guestAccess; },
-    canManageTasks(): boolean { return this.generalAccess; },
-    canDeleteTasks(): boolean { return this.adminAccess; },
   },
   actions: {
     clear() {
@@ -42,6 +35,13 @@ export const useUserStore = defineStore('user', {
     async login(email: string, password: string) {
       const response = await request<{ user: SessionUser; expiresAt: string }>('/api/auth/login', {
         method: 'POST', body: { email, password }, anonymous: true,
+      });
+      this.user = response.user;
+      this.restored = true;
+    },
+    async register(name: string, email: string, password: string) {
+      const response = await request<{ user: SessionUser; expiresAt: string }>('/api/auth/register', {
+        method: 'POST', body: { name, email, password }, anonymous: true,
       });
       this.user = response.user;
       this.restored = true;

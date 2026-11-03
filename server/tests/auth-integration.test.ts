@@ -1,14 +1,12 @@
 import { createHmac } from 'node:crypto';
-import { PrismaPg } from '@prisma/adapter-pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildServer } from '../app.js';
-import { PrismaClient } from '../generated/prisma/client.js';
+import type { PrismaClient } from '../generated/prisma/client.js';
+import { createPrismaClient } from '../plugins/database.js';
 import {
-  createAuthFixture, mutationHeaders, testAuth, testPassword,
+  createAuthFixture, createTestDatabase, mutationHeaders, testAuth, testPassword,
 } from './auth-fixture.js';
 
-// Never fall back to DATABASE_URL: these users and sessions belong to an explicit test database.
-const databaseUrl = process.env.TEST_DATABASE_URL;
 type Claims = { sub: string; sid: string; exp: number; iss: string; aud: string; iat?: number };
 
 function tokenFromCookie(cookie: string): string {
@@ -24,30 +22,32 @@ function signClaims(claims: object, secret = testAuth.secret, header: object = {
   return `${data}.${createHmac('sha256', secret).update(data).digest('base64url')}`;
 }
 
-describe.skipIf(!databaseUrl)('JWT authentication: real PostgreSQL users and sessions', () => {
+describe('JWT authentication: real SQLite users and sessions', () => {
+  let testDatabase: ReturnType<typeof createTestDatabase>;
   let database: PrismaClient;
   let server: Awaited<ReturnType<typeof buildServer>>;
   let auth: Awaited<ReturnType<typeof createAuthFixture>>;
   let requestAddress = 1;
 
   beforeAll(async () => {
-    if (!databaseUrl) throw new Error('TEST_DATABASE_URL must point to a disposable migrated database.');
-    database = new PrismaClient({ adapter: new PrismaPg({ connectionString: databaseUrl }) });
+    testDatabase = createTestDatabase();
+    database = createPrismaClient(testDatabase.url);
     await database.$connect();
     server = await buildServer({
-      databaseUrl, logger: false,
+      databaseUrl: testDatabase.url, logger: false,
       auth: { ...testAuth, cookieSecure: true, allowedOrigins: ['http://localhost:5173'] },
     });
     auth = await createAuthFixture(server, database);
-  }, 20_000);
+  }, 60_000);
 
   afterAll(async () => {
     await server?.close();
     await auth?.dispose();
     await database?.$disconnect();
+    testDatabase?.dispose();
   });
 
-  function login(payload: object = { email: auth.manager.email, password: testPassword }) {
+  function login(payload: object = { email: auth.user.email, password: testPassword }) {
     return server.inject({
       method: 'POST', url: '/api/auth/login', headers: mutationHeaders, payload,
       remoteAddress: `192.0.2.${requestAddress++}`,
@@ -55,10 +55,10 @@ describe.skipIf(!databaseUrl)('JWT authentication: real PostgreSQL users and ses
   }
 
   it('logs in, sets a restricted cookie, and restores a session without exposing secrets', async () => {
-    const response = await login({ email: auth.manager.email.toUpperCase(), password: testPassword });
+    const response = await login({ email: auth.user.email.toUpperCase(), password: testPassword });
     expect(response.statusCode, response.body).toBe(200);
     expect(response.json()).toMatchObject({
-      user: { id: auth.manager.id, email: auth.manager.email, name: auth.manager.name, role: 'manager' },
+      user: { id: auth.user.id, email: auth.user.email, name: auth.user.name, role: 'user' },
       expiresAt: expect.any(String),
     });
     const header = response.headers['set-cookie'];
@@ -68,7 +68,7 @@ describe.skipIf(!databaseUrl)('JWT authentication: real PostgreSQL users and ses
     expect(header).toEqual(expect.stringContaining('Path=/api'));
     expect(header).not.toEqual(expect.stringContaining('Domain='));
     expect(response.body).not.toContain(testPassword);
-    expect(response.body).not.toContain(auth.manager.passwordHash);
+    expect(response.body).not.toContain(auth.user.passwordHash);
     expect(response.json()).not.toHaveProperty('token');
     expect(response.json()).not.toHaveProperty('accessToken');
     const cookie = response.cookies.find(candidate => candidate.name === 'framework_session');
@@ -80,12 +80,12 @@ describe.skipIf(!databaseUrl)('JWT authentication: real PostgreSQL users and ses
 
   it('accepts a signed bearer JWT for API clients and rejects the old demo tokens', async () => {
     const valid = await server.inject({
-      method: 'GET', url: '/api/tasks',
-      headers: { authorization: `Bearer ${tokenFromCookie(auth.managerHeaders.cookie)}` },
+      method: 'GET', url: '/api/auth/me',
+      headers: { authorization: `Bearer ${tokenFromCookie(auth.userHeaders.cookie)}` },
     });
     expect(valid.statusCode, valid.body).toBe(200);
     for (const token of ['demo-operator-token', 'demo-subscriber-token', 'not-a-jwt']) {
-      const response = await server.inject({ method: 'GET', url: '/api/tasks', headers: { authorization: `Bearer ${token}` } });
+      const response = await server.inject({ method: 'GET', url: '/api/auth/me', headers: { authorization: `Bearer ${token}` } });
       expect(response.statusCode, response.body).toBe(401);
     }
   });
@@ -94,24 +94,23 @@ describe.skipIf(!databaseUrl)('JWT authentication: real PostgreSQL users and ses
     for (const authorization of ['Basic Zm9vOmJhcg==', 'Bearer', 'Bearer invalid-jwt']) {
       const response = await server.inject({
         method: 'GET', url: '/api/auth/me',
-        headers: { cookie: auth.managerHeaders.cookie, authorization },
+        headers: { cookie: auth.userHeaders.cookie, authorization },
       });
       expect(response.statusCode, response.body).toBe(401);
     }
-    const validBearer = `Bearer ${tokenFromCookie(auth.managerHeaders.cookie)}`;
+    const validBearer = `Bearer ${tokenFromCookie(auth.userHeaders.cookie)}`;
     for (const authorization of ['Basic Zm9vOmJhcg==', validBearer]) {
       const response = await server.inject({
-        method: 'POST', url: '/api/tasks',
-        headers: { cookie: auth.managerHeaders.cookie, authorization, origin: testAuth.origin },
-        payload: { title: 'Cookie CSRF marker remains mandatory' },
+        method: 'POST', url: '/api/auth/logout',
+        headers: { cookie: auth.userHeaders.cookie, authorization, origin: testAuth.origin },
       });
       expect(response.statusCode, response.body).toBe(403);
     }
   });
 
   it('does not reveal whether an email exists or create sessions for invalid passwords', async () => {
-    const before = await database.authSession.count({ where: { userId: auth.manager.id } });
-    const wrongPassword = await login({ email: auth.manager.email, password: 'This-is-not-the-password!' });
+    const before = await database.authSession.count({ where: { userId: auth.user.id } });
+    const wrongPassword = await login({ email: auth.user.email, password: 'This-is-not-the-password!' });
     const missingUser = await login({ email: 'does-not-exist@example.test', password: 'This-is-not-the-password!' });
     expect(wrongPassword.statusCode).toBe(401);
     expect(missingUser.statusCode).toBe(401);
@@ -120,20 +119,20 @@ describe.skipIf(!databaseUrl)('JWT authentication: real PostgreSQL users and ses
     expect({ code: wrongPasswordError.code, message: wrongPasswordError.message })
       .toEqual({ code: missingUserError.code, message: missingUserError.message });
     expect(wrongPassword.cookies).toHaveLength(0);
-    expect(await database.authSession.count({ where: { userId: auth.manager.id } })).toBe(before);
+    expect(await database.authSession.count({ where: { userId: auth.user.id } })).toBe(before);
   });
 
   it.each([
     {}, { email: 'invalid-email', password: testPassword },
     { email: 'test@example.test' }, { email: 'test@example.test', password: 123 },
-    { email: 'test@example.test', password: testPassword, role: 'manager' },
+    { email: 'test@example.test', password: testPassword, role: 'admin' },
   ])('rejects malformed login input before authentication: %j', async payload => {
     const response = await login(payload);
     expect(response.statusCode, response.body).toBe(400);
   });
 
   it('requires authentication for session and application routes', async () => {
-    for (const url of ['/api/auth/me', '/api/tasks', '/api/subscribers', '/api/operator/status']) {
+    for (const url of ['/api/auth/me']) {
       const response = await server.inject({ method: 'GET', url });
       expect(response.statusCode, `${url}: ${response.body}`).toBe(401);
     }
@@ -144,7 +143,7 @@ describe.skipIf(!databaseUrl)('JWT authentication: real PostgreSQL users and ses
   });
 
   it('rejects forged, expired, unbounded and incorrectly scoped JWTs', async () => {
-    const claims = claimsOf(tokenFromCookie(auth.managerHeaders.cookie));
+    const claims = claimsOf(tokenFromCookie(auth.userHeaders.cookie));
     const { exp: _expiration, ...withoutExpiration } = claims;
     const tokens = [
       signClaims(claims, 'a-different-secret-used-to-forge-the-token'),
@@ -152,7 +151,7 @@ describe.skipIf(!databaseUrl)('JWT authentication: real PostgreSQL users and ses
       signClaims(withoutExpiration),
       signClaims({ ...claims, iss: 'another-server' }),
       signClaims({ ...claims, aud: 'another-client' }),
-      signClaims({ ...claims, sub: auth.guest.id }),
+      signClaims({ ...claims, sub: auth.admin.id }),
       signClaims({ ...claims, sid: 'missing-session' }),
       signClaims(claims, testAuth.secret, { alg: 'none', typ: 'JWT' }),
     ];
@@ -174,33 +173,33 @@ describe.skipIf(!databaseUrl)('JWT authentication: real PostgreSQL users and ses
   });
 
   it('requires the same-origin request marker for cookie mutations and prevents login CSRF', async () => {
-    const before = await database.task.count();
+    const sessionsBefore = await database.authSession.count();
     for (const headers of [
-      { cookie: auth.managerHeaders.cookie },
-      { cookie: auth.managerHeaders.cookie, origin: testAuth.origin },
-      { ...auth.managerHeaders, origin: 'https://untrusted.example' },
-      { ...auth.managerHeaders, 'sec-fetch-site': 'cross-site' },
+      { cookie: auth.userHeaders.cookie },
+      { cookie: auth.userHeaders.cookie, origin: testAuth.origin },
+      { ...auth.userHeaders, origin: 'https://untrusted.example' },
+      { ...auth.userHeaders, 'sec-fetch-site': 'cross-site' },
     ]) {
-      const response = await server.inject({ method: 'POST', url: '/api/tasks', headers, payload: { title: 'CSRF must not create this task' } });
+      const response = await server.inject({ method: 'POST', url: '/api/auth/logout', headers });
       expect(response.statusCode, response.body).toBe(403);
     }
     for (const headers of [{}, { origin: testAuth.origin }, { ...mutationHeaders, origin: 'https://untrusted.example' }]) {
       const response = await server.inject({
         method: 'POST', url: '/api/auth/login', headers,
-        payload: { email: auth.manager.email, password: testPassword },
+        payload: { email: auth.user.email, password: testPassword },
         remoteAddress: `192.0.2.${requestAddress++}`,
       });
       expect(response.statusCode, response.body).toBe(403);
       expect(response.cookies).toHaveLength(0);
     }
-    expect(await database.task.count()).toBe(before);
+    expect(await database.authSession.count()).toBe(sessionsBefore);
   });
 
   it('allows the explicitly configured Vite origin and does not enable wildcard CORS', async () => {
     const response = await server.inject({
       method: 'POST', url: '/api/auth/login',
       headers: { ...mutationHeaders, origin: 'http://localhost:5173' },
-      payload: { email: auth.manager.email, password: testPassword },
+      payload: { email: auth.user.email, password: testPassword },
       remoteAddress: `192.0.2.${requestAddress++}`,
     });
     expect(response.statusCode, response.body).toBe(200);
@@ -211,14 +210,14 @@ describe.skipIf(!databaseUrl)('JWT authentication: real PostgreSQL users and ses
     for (const url of ['/api/auth/%6cogin', '/api/%61uth/login', '/api/auth/%6cogout']) {
       const response = await server.inject({
         method: 'POST', url, headers: { origin: testAuth.origin },
-        ...(url.endsWith('ogin') ? { payload: { email: auth.manager.email, password: testPassword } } : {}),
+        ...(url.endsWith('ogin') ? { payload: { email: auth.user.email, password: testPassword } } : {}),
         remoteAddress: `192.0.2.${requestAddress++}`,
       });
       expect(response.statusCode, `${url}: ${response.body}`).toBe(403);
     }
     const allowed = await server.inject({
       method: 'POST', url: '/api/auth/%6cogin', headers: mutationHeaders,
-      payload: { email: auth.manager.email, password: testPassword },
+      payload: { email: auth.user.email, password: testPassword },
       remoteAddress: `192.0.2.${requestAddress++}`,
     });
     expect(allowed.statusCode, allowed.body).toBe(200);
@@ -237,21 +236,19 @@ describe.skipIf(!databaseUrl)('JWT authentication: real PostgreSQL users and ses
     const replay = await server.inject({ method: 'GET', url: '/api/auth/me', headers: { authorization: `Bearer ${token}` } });
     expect(replay.statusCode, replay.body).toBe(401);
     expect(await database.authSession.findUnique({ where: { id: claimsOf(token).sid } })).toBeNull();
-    expect((await server.inject({ method: 'GET', url: '/api/auth/me', headers: auth.managerHeaders })).statusCode).toBe(200);
+    expect((await server.inject({ method: 'GET', url: '/api/auth/me', headers: auth.userHeaders })).statusCode).toBe(200);
   });
 
   it('applies role changes and account disabling to existing JWT sessions', async () => {
     try {
-      await database.user.update({ where: { id: auth.manager.id }, data: { role: 'foreign' } });
-      const restricted = await server.inject({ method: 'GET', url: '/api/tasks', headers: auth.managerHeaders });
-      expect(restricted.statusCode, restricted.body).toBe(403);
-      const current = await server.inject({ method: 'GET', url: '/api/auth/me', headers: auth.managerHeaders });
-      expect(current.json()).toMatchObject({ user: { id: auth.manager.id, role: 'foreign' } });
-      await database.user.update({ where: { id: auth.manager.id }, data: { disabled: true } });
-      expect((await server.inject({ method: 'GET', url: '/api/auth/me', headers: auth.managerHeaders })).statusCode).toBe(401);
+      await database.user.update({ where: { id: auth.user.id }, data: { role: 'admin' } });
+      const current = await server.inject({ method: 'GET', url: '/api/auth/me', headers: auth.userHeaders });
+      expect(current.json()).toMatchObject({ user: { id: auth.user.id, role: 'admin' } });
+      await database.user.update({ where: { id: auth.user.id }, data: { disabled: true } });
+      expect((await server.inject({ method: 'GET', url: '/api/auth/me', headers: auth.userHeaders })).statusCode).toBe(401);
       expect((await login()).statusCode).toBe(401);
     } finally {
-      await database.user.update({ where: { id: auth.manager.id }, data: { role: 'manager', subscriberId: null, disabled: false } });
+      await database.user.update({ where: { id: auth.user.id }, data: { role: 'user', disabled: false } });
     }
   });
 
@@ -259,17 +256,51 @@ describe.skipIf(!databaseUrl)('JWT authentication: real PostgreSQL users and ses
     for (let attempt = 0; attempt < 10; attempt++) {
       const response = await server.inject({
         method: 'POST', url: '/api/auth/login', headers: mutationHeaders,
-        payload: { email: auth.manager.email, password: 'Wrong-password-for-rate-limit' },
+        payload: { email: auth.user.email, password: 'Wrong-password-for-rate-limit' },
         remoteAddress: '198.51.100.17',
       });
       expect(response.statusCode, response.body).toBe(401);
     }
     const limited = await server.inject({
       method: 'POST', url: '/api/auth/login', headers: mutationHeaders,
-      payload: { email: auth.manager.email, password: testPassword }, remoteAddress: '198.51.100.17',
+      payload: { email: auth.user.email, password: testPassword }, remoteAddress: '198.51.100.17',
     });
     expect(limited.statusCode, limited.body).toBe(429);
     expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
     expect((await login()).statusCode).toBe(200);
+  });
+
+  it('registers a regular user, opens a session and ignores attempts to pick a role', async () => {
+    const email = `registered-${Date.now()}@example.test`;
+    const response = await server.inject({
+      method: 'POST', url: '/api/auth/register', headers: mutationHeaders,
+      payload: { email: `  ${email.toUpperCase()} `, name: ' New user ', password: testPassword },
+      remoteAddress: `192.0.2.${requestAddress++}`,
+    });
+    expect(response.statusCode, response.body).toBe(201);
+    expect(response.json()).toMatchObject({ user: { email, name: 'New user', role: 'user' } });
+    const cookie = response.cookies.find(candidate => candidate.name === 'framework_session');
+    const current = await server.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: `framework_session=${cookie!.value}` } });
+    expect(current.statusCode, current.body).toBe(200);
+    const duplicate = await server.inject({
+      method: 'POST', url: '/api/auth/register', headers: mutationHeaders,
+      payload: { email, name: 'Duplicate', password: testPassword }, remoteAddress: `192.0.2.${requestAddress++}`,
+    });
+    expect(duplicate.statusCode, duplicate.body).toBe(409);
+    for (const payload of [
+      { email: 'other@example.test', name: 'Admin', password: testPassword, role: 'admin' },
+      { email: 'other@example.test', name: 'Short', password: 'short' },
+      { email: 'other@example.test', password: testPassword },
+    ]) {
+      const invalid = await server.inject({
+        method: 'POST', url: '/api/auth/register', headers: mutationHeaders, payload, remoteAddress: `192.0.2.${requestAddress++}`,
+      });
+      expect(invalid.statusCode, invalid.body).toBe(400);
+    }
+    const csrf = await server.inject({
+      method: 'POST', url: '/api/auth/register', headers: { origin: testAuth.origin },
+      payload: { email: 'csrf@example.test', name: 'CSRF', password: testPassword }, remoteAddress: `192.0.2.${requestAddress++}`,
+    });
+    expect(csrf.statusCode, csrf.body).toBe(403);
   });
 });

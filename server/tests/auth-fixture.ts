@@ -1,9 +1,13 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { PrismaClient } from '../generated/prisma/client.js';
 import { ScryptPasswords } from '../plugins/passwords.js';
 
-// This key and password exist only in the opt-in disposable database test suite.
+// This key and password exist only in the disposable test database suite.
 export const testAuth = {
   secret: 'isolated-integration-tests-only-secret-2026',
   origin: 'http://localhost:3400',
@@ -27,54 +31,32 @@ export async function loginTestUser(server: FastifyInstance, email: string): Pro
   return { ...mutationHeaders, cookie: `${cookie.name}=${cookie.value}` };
 }
 
+/** A migrated SQLite file in a temporary directory; never touches DATABASE_URL. */
+export function createTestDatabase(): { url: string; dispose(): void } {
+  const directory = mkdtempSync(path.join(tmpdir(), 'job-autopilot-test-'));
+  const url = `file:${path.join(directory, 'test.db')}`;
+  execFileSync('npx', ['prisma', 'migrate', 'deploy'], { env: { ...process.env, DATABASE_URL: url }, stdio: 'ignore' });
+  return { url, dispose: () => rmSync(directory, { recursive: true, force: true }) };
+}
+
 export async function createAuthFixture(server: FastifyInstance, database: PrismaClient) {
   const prefix = `auth-fixture-${randomUUID()}`;
-  const subscriberAccount = await database.subscriber.create({
-    data: {
-      id: prefix, accountNumber: prefix, meterNumber: prefix,
-      displayName: 'Isolated authentication test account', villageName: 'Synthetic test village',
-      readingHundredths: 0, balanceKopeks: 0, waterTariffKopeks: 1_000, drainageTariffKopeks: 0,
-      hasWater: true, hasDrainage: false,
-    },
-  });
   const passwordHash = await new ScryptPasswords().hash(testPassword);
   const admin = await database.user.create({
     data: { email: `${prefix}-admin@example.test`, name: 'Test admin', passwordHash, role: 'admin' },
   });
-  const manager = await database.user.create({
-    data: { email: `${prefix}-manager@example.test`, name: 'Test manager', passwordHash, role: 'manager' },
+  const user = await database.user.create({
+    data: { email: `${prefix}-user@example.test`, name: 'Test user', passwordHash, role: 'user' },
   });
-  const guest = await database.user.create({
-    data: {
-      email: `${prefix}-guest@example.test`, name: 'Test guest', passwordHash,
-      role: 'guest', subscriberId: subscriberAccount.id,
-    },
-  });
-  const foreign = await database.user.create({
-    data: { email: `${prefix}-foreign@example.test`, name: 'Test foreign', passwordHash, role: 'foreign' },
-  });
-  const managerHeaders = await loginTestUser(server, manager.email);
-  const guestHeaders = await loginTestUser(server, guest.email);
-  const userIds = [admin.id, manager.id, guest.id, foreign.id];
+  const userIds = [admin.id, user.id];
   return {
     admin,
-    manager,
-    guest,
-    foreign,
-    // Existing subject-domain tests describe business personas, not framework roles.
-    operator: manager,
-    subscriber: guest,
-    subscriberAccount,
+    user,
     adminHeaders: await loginTestUser(server, admin.email),
-    managerHeaders,
-    guestHeaders,
-    foreignHeaders: await loginTestUser(server, foreign.email),
-    operatorHeaders: managerHeaders,
-    subscriberHeaders: guestHeaders,
+    userHeaders: await loginTestUser(server, user.email),
     async dispose() {
       await database.authSession.deleteMany({ where: { userId: { in: userIds } } });
       await database.user.deleteMany({ where: { id: { in: userIds } } });
-      await database.subscriber.delete({ where: { id: subscriberAccount.id } });
     },
   };
 }

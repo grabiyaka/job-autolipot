@@ -2,10 +2,10 @@
   <RouterView v-if="!authenticated" />
   <div v-else class="workspace">
     <aside class="sidebar">
-      <RouterLink class="brand" to="/tasks" aria-label="JWX — задачи"><span>j.</span> JWX <small>workspace</small></RouterLink>
+      <RouterLink class="brand" to="/jobs" aria-label="job-autopilot — вакансии"><span>j.</span> autopilot <small>jobs</small></RouterLink>
       <p class="eyebrow navigation-label">Рабочее пространство</p>
       <nav aria-label="Основная навигация">
-        <RouterLink to="/tasks"><AppIcon name="tasks" /> Задачи</RouterLink>
+        <RouterLink to="/jobs"><AppIcon name="tasks" /> Вакансии</RouterLink>
         <RouterLink to="/profile"><AppIcon name="user" /> Мой профиль</RouterLink>
       </nav>
       <footer>
@@ -21,7 +21,7 @@
       </header>
       <p v-if="logoutError" class="message error" role="alert">{{ logoutError }}</p>
       <RouterView />
-      <footer class="page-footer"><span>JWX workspace</span><span>Всё необходимое для работы.</span></footer>
+      <footer class="page-footer"><span>job-autopilot</span><span>Вакансии собираются автоматически.</span></footer>
     </section>
   </div>
 </template>
