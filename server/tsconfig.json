@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": ".",
+    "outDir": "dist",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "verbatimModuleSyntax": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "types": ["node"]
+  },
+  "include": ["app.ts", "server.ts", "src/**/*.ts", "framework/**/*.ts", "plugins/**/*.ts", "middlewares/**/*.ts", "generated/**/*.ts", "prisma/**/*.ts", "prisma.config.ts", "scripts/create-user.ts"],
+  "exclude": ["node_modules", "dist"]
+}

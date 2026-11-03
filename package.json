@@ -1,0 +1,27 @@
+{
+  "name": "jwx-framework",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "install:all": "npm --prefix server ci && npm --prefix client ci",
+    "dev": "node scripts/dev.mjs",
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "build": "npm --prefix server run build && npm --prefix client run build",
+    "start": "npm --prefix server start",
+    "check": "npm run check:server && npm run check:client",
+    "check:server": "npm --prefix server run check",
+    "check:client": "npm --prefix client run check",
+    "test": "npm --prefix server test && npm --prefix client test",
+    "db:generate": "npm --prefix server run db:generate",
+    "db:migrate": "npm --prefix server run db:migrate",
+    "db:seed": "npm --prefix server run db:seed",
+    "domain:generate": "npm --prefix server run domain:generate --",
+    "domain:check": "npm --prefix server run domain:check",
+    "architecture": "npm --prefix server run architecture",
+    "user:create": "npm --prefix server run user:create --"
+  }
+}

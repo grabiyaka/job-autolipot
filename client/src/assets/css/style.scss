@@ -1,0 +1,167 @@
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color: $ink;
+  background: $canvas;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+
+  body {
+    margin: 0;
+  }
+
+  h1, h2, h3, p {
+    margin: 0;
+  }
+
+  h1, h2, h3 {
+    line-height: 1.2;
+  }
+
+  button, input, select, textarea {
+    font: inherit;
+  }
+
+  button, a, input, select, textarea {
+    -webkit-tap-highlight-color: transparent;
+
+    &:focus-visible {
+      outline: 3px solid $primary;
+      outline-offset: 3px;
+    }
+  }
+
+  button {
+    cursor: pointer;
+
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 10px 17px;
+  border: 1px solid $line;
+  border-radius: 9px;
+  background: white;
+  color: $ink;
+  font-weight: 600;
+  transition: background 150ms, border-color 150ms;
+
+  &:hover:not(:disabled) {
+    background: $canvas;
+    border-color: $muted;
+  }
+
+  &.primary {
+    color: white;
+    background: $primary;
+    border-color: $primary;
+
+    &:hover:not(:disabled) {
+      background: $primary-dark;
+      border-color: $primary-dark;
+    }
+  }
+
+  &.quiet {
+    background: transparent;
+    border-color: transparent;
+    color: $muted;
+  }
+
+  &.danger {
+    color: white;
+    background: $danger;
+    border-color: $danger;
+  }
+
+  &.icon {
+    min-width: 40px;
+    padding: 8px;
+  }
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  font-weight: 600;
+
+  input, select, textarea {
+    width: 100%;
+    min-height: 43px;
+    padding: 10px 12px;
+    border: 1px solid $line;
+    border-radius: 8px;
+    color: $ink;
+    background: white;
+    font-weight: 400;
+
+    &::placeholder {
+      color: $muted;
+    }
+  }
+
+  textarea {
+    min-height: 110px;
+    resize: vertical;
+  }
+
+  small {
+    color: $muted;
+    font-size: 12px;
+    font-weight: 400;
+  }
+}
+
+.message {
+  padding: 12px 15px;
+  border-radius: 8px;
+  color: $muted;
+  background: $canvas;
+
+  &.error {
+    color: $danger;
+    background: $danger-soft;
+  }
+
+  &.success {
+    color: $success;
+    background: $success-soft;
+  }
+}
+
+.eyebrow {
+  color: $muted;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

@@ -1,0 +1,125 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  admin
+  manager
+  guest
+  foreign
+}
+
+model User {
+  id           String        @id @default(uuid())
+  email        String        @unique
+  name         String
+  passwordHash String
+  role         UserRole      @default(foreign)
+  subscriberId String?
+  disabled     Boolean       @default(false)
+  createdAt    DateTime      @default(now()) @db.Timestamptz(3)
+  subscriber   Subscriber?   @relation(fields: [subscriberId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  sessions     AuthSession[]
+
+  @@map("users")
+}
+
+model AuthSession {
+  id        String   @id @default(uuid())
+  userId    String
+  expiresAt DateTime @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("auth_sessions")
+}
+
+enum TaskStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+}
+
+/// Independent CRUD example: field types and HTTP schemas come from this model.
+model Task {
+  id          String     @id @default(uuid())
+  title       String
+  description String?
+  completed   Boolean    @default(false)
+  priority    Int        @default(0)
+  status      TaskStatus @default(OPEN)
+  dueAt       DateTime?  @db.Timestamptz(3)
+  tags        String[]   @default([])
+  createdAt   DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime   @updatedAt @db.Timestamptz(3)
+
+  @@map("tasks")
+}
+
+model Subscriber {
+  id                    String    @id
+  accountNumber         String    @unique
+  displayName           String
+  villageName           String
+  meterNumber           String    @unique
+  readingHundredths     Int
+  balanceKopeks         Int
+  maintenanceBalanceKopeks Int      @default(0)
+  verifiedReadingHundredths Int?
+  verifiedAt            String?
+  verifiedByTransactionId String?
+  waterTariffKopeks     Int
+  drainageTariffKopeks  Int
+  hasWater              Boolean
+  hasDrainage           Boolean
+  version               Int       @default(0)
+  readings              Reading[]
+  transactions          LedgerTransaction[]
+  users                 User[]
+
+  @@map("subscribers")
+}
+
+/// Append-only evidence: corrections and cancellations are additional linked entries.
+model LedgerTransaction {
+  id             String     @id
+  sequence       Int        @unique @default(autoincrement())
+  idempotencyKey String     @unique
+  subscriberId   String
+  createdAt      DateTime   @db.Timestamptz(3)
+  effectiveAt    DateTime   @db.Timestamptz(3)
+  snapshot       Json       @db.JsonB
+  reversesId     String?    @unique
+  amendsId       String?
+  bankReference  String?
+  subscriber     Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  reverses       LedgerTransaction? @relation("Cancellation", fields: [reversesId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  cancelledBy    LedgerTransaction? @relation("Cancellation")
+  amends         LedgerTransaction? @relation("DescriptionChange", fields: [amendsId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  amendments     LedgerTransaction[] @relation("DescriptionChange")
+
+  @@unique([subscriberId, bankReference])
+  @@index([subscriberId, effectiveAt, sequence])
+  @@map("transactions")
+}
+
+/// An immutable audit record with a complete, validated business snapshot.
+model Reading {
+  id             String     @id
+  idempotencyKey String     @unique
+  subscriberId   String
+  createdAt      DateTime   @db.Timestamptz(3)
+  snapshot       Json       @db.JsonB
+  subscriber     Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([subscriberId, createdAt])
+  @@map("readings")
+}

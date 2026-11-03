@@ -1,0 +1,24 @@
+$ink: rgb(34, 38, 55);
+$muted: rgb(111, 118, 139);
+$primary: rgb(103, 83, 207);
+$primary-dark: rgb(79, 61, 173);
+$primary-soft: rgb(240, 236, 255);
+$canvas: rgb(247, 248, 252);
+$line: rgb(231, 233, 242);
+$success: rgb(43, 126, 94);
+$success-soft: rgb(234, 247, 239);
+$danger: rgb(182, 61, 86);
+$danger-soft: rgb(255, 239, 242);
+$amber: rgb(161, 104, 26);
+$amber-soft: rgb(255, 247, 230);
+$shadow: 0 18px 65px rgb(35 32 64 / 10%);
+$backdrop: rgb(28 26 47 / 40%);
+$orbit-line: rgb(103 83 207 / 12%);
+$glass-line: rgb(255 255 255 / 80%);
+$glass: rgb(255 255 255 / 90%);
+
+@mixin responsive($max-width) {
+  @media (max-width: $max-width) {
+    @content;
+  }
+}
