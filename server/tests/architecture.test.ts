@@ -8,22 +8,25 @@ import { checkDependency, inspectArchitecture, inspectSourceImports } from '../s
 const root = process.cwd();
 const domain = `${root}/src/readings`;
 
-test('controllers cannot import even their own repository or its contract', () => {
-  for (const dependency of ['ReadingRepository.ts', 'ReadingContracts.ts', 'ReadingSnapshotMapper.ts', 'ReadingService.ts', 'ReadingRoutes.ts']) {
+test('controllers use their own service but cannot reach the repository or its contract', () => {
+  for (const dependency of ['ReadingRepository.ts', 'ReadingContracts.ts', 'ReadingSnapshotMapper.ts', 'ReadingRoutes.ts']) {
     assert.notEqual(checkDependency(`${domain}/ReadingController.ts`, `${domain}/${dependency}`).length, 0);
   }
+  assert.deepEqual(checkDependency(`${domain}/ReadingController.ts`, `${domain}/ReadingService.ts`), []);
+  assert.notEqual(checkDependency(`${domain}/ReadingController.ts`, `${root}/src/subscribers/SubscriberService.ts`).length, 0);
 });
 
 test('domain routes can wire their own controllers and middleware without repository access', () => {
   assert.notEqual(checkDependency(`${domain}/ReadingRoutes.ts`, `${domain}/ReadingRepository.ts`).length, 0);
   assert.deepEqual(checkDependency(`${domain}/ReadingRoutes.ts`, `${domain}/ReadingController.ts`), []);
+  assert.deepEqual(checkDependency(`${domain}/ReadingRoutes.ts`, `${domain}/ReadingService.ts`), []);
   assert.deepEqual(checkDependency(`${domain}/ReadingRoutes.ts`, `${root}/middlewares/access.ts`), []);
   assert.deepEqual(checkDependency(`${domain}/ReadingRoutes.ts`, `${root}/framework/http/error-schema.ts`), []);
   assert.notEqual(checkDependency(`${domain}/ReadingController.ts`, `${root}/middlewares/access.ts`).length, 0);
   assert.notEqual(checkDependency(`${domain}/ReadingRoutes.ts`, `${root}/src/subscribers/SubscriberRoutes.ts`).length, 0);
 });
 
-test('services may use their own contracts and foreign public Types modules', () => {
+test('services may use their own contracts, their own repository and foreign public Types modules', () => {
   assert.deepEqual(checkDependency(`${domain}/ReadingService.ts`, `${domain}/ReadingContracts.ts`), []);
   assert.deepEqual(checkDependency(`${domain}/ReadingService.ts`, `${domain}/ReadingRules.ts`), []);
   assert.deepEqual(checkDependency(`${domain}/ReadingService.ts`, `${domain}/MeterReading.ts`), []);
@@ -32,9 +35,11 @@ test('services may use their own contracts and foreign public Types modules', ()
   for (const dependency of ['public.ts', 'internal/SubscriberTypes.ts', 'SubscriberTypesHelper.ts']) {
     assert.notEqual(checkDependency(`${domain}/ReadingService.ts`, `${root}/src/subscribers/${dependency}`).length, 0);
   }
-  for (const dependency of ['ReadingRepository.ts', 'ReadingSnapshotMapper.ts', 'ReadingRoutes.ts', 'ReadingController.ts']) {
+  assert.deepEqual(checkDependency(`${domain}/ReadingService.ts`, `${domain}/ReadingRepository.ts`), []);
+  for (const dependency of ['ReadingSnapshotMapper.ts', 'ReadingRoutes.ts', 'ReadingController.ts']) {
     assert.notEqual(checkDependency(`${domain}/ReadingService.ts`, `${domain}/${dependency}`).length, 0);
   }
+  assert.notEqual(checkDependency(`${domain}/ReadingService.ts`, `${root}/src/subscribers/SubscriberRepository.ts`).length, 0);
   assert.notEqual(checkDependency(`${domain}/ReadingService.ts`, `${root}/src/subscribers/SubscriberContracts.ts`).length, 0);
   assert.notEqual(checkDependency(`${domain}/ReadingService.ts`, `${root}/src/subscribers/SubscriberService.ts`).length, 0);
 });

@@ -8,7 +8,8 @@
 Каркас взят из jwx-framework, его демо-домены удалены.
 
 **Состояние.** Работают вход, регистрация и сессии. Готова схема БД: `jobs`, `applications`,
-`questions`, `answers`. Есть пустая страница «Вакансии». Сборщика, отбора и подачи
+`questions`, `answers`. Домен [`jobs`](docs/jobs.md) готов: HTTP API для своих вакансий и API
+для этапов конвейера. Страница «Вакансии» пока пустая. Сборщика, отбора и подачи
 ещё нет. Следующий шаг — [модульный сборщик](docs/collector-plan.md).
 
 Запуск, структура и проверки описаны в [docs/development.md](docs/development.md).
@@ -74,7 +75,7 @@ LinkedIn весит 10–50k токенов, и на таком железе м�
 |---|---|---|---|
 | Домен `users` | `server/src/users` | регистрация, вход, сессии в HttpOnly cookie | готов |
 | Схема БД | `server/prisma/schema.prisma` | `jobs`, `applications`, `questions`, `answers` | готова |
-| Домен `jobs` | `server/src/jobs` | запись найденных вакансий, выдача пользователя по статусам | план |
+| Домен `jobs` | `server/src/jobs` | вакансии пользователя: выдача, ручное добавление, статусы, API для сборщика и scorer — [docs/jobs.md](docs/jobs.md) | готов |
 | `collector` | `server/collector` | ядро и модули источников (LinkedIn, Djinni, …) | [план](docs/collector-plan.md) |
 | Домены `applications`, `questions`, `answers` | `server/src/…` | попытки подачи, вопросы агента, банк ответов | план |
 | `scorer` | плагин Ollama | JSON-оценка вакансии против CV | план |

@@ -119,10 +119,12 @@ export function checkDependency(file: string, dependency: string, specifier = de
       : ['Business rules may import only business rules, public contracts and pure core modules.'];
   }
 
+  // A small domain may be just Routes → Controller → Service → Repository: each layer may use
+  // the next one of its own domain. Skipping a layer (Routes/Controller → Repository) stays forbidden.
   if (from.role === 'service') {
-    return core || publicContract || (ownDomain && ['service', 'contracts', 'business'].includes(to.role))
+    return core || publicContract || (ownDomain && ['service', 'contracts', 'business', 'repository'].includes(to.role))
       ? []
-      : ['Services may import only their own Service/Contracts modules, business rules, public contracts and core.'];
+      : ['Services may import only their own Service/Contracts/Repository modules, business rules, public contracts and core.'];
   }
 
   if (from.role === 'contracts' || from.role === 'public') {
@@ -133,17 +135,17 @@ export function checkDependency(file: string, dependency: string, specifier = de
   }
 
   if (from.role === 'routes') {
-    return core || publicContract || (ownDomain && to.role === 'controller')
+    return core || publicContract || (ownDomain && ['controller', 'service'].includes(to.role))
       || target?.startsWith('framework/http/') || target?.startsWith('middlewares/')
       || isFastify(dependency, specifier)
       ? []
-      : ['Routes may import their own Controller modules, public contracts, shared HTTP schemas, middleware, core and Fastify.'];
+      : ['Routes may import their own Controller/Service modules, public contracts, shared HTTP schemas, middleware, core and Fastify.'];
   }
 
   if (from.role === 'controller') {
-    return core || publicContract || isFastify(dependency, specifier)
+    return core || publicContract || (ownDomain && to.role === 'service') || isFastify(dependency, specifier)
       ? []
-      : ['Controllers may import only public contracts, core and Fastify; repository contracts and middleware belong outside controllers.'];
+      : ['Controllers may import only their own Service, public contracts, core and Fastify; repositories and middleware belong outside controllers.'];
   }
 
   // Infrastructure can implement its own ports and use libraries; foreign internals remain private.

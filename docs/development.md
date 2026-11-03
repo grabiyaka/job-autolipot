@@ -66,7 +66,7 @@ client/
   src/router/          Vue Router
   src/assets/css/      общие стили и SCSS-миксины
 server/
-  src/                 плоские домены; сейчас users
+  src/                 плоские домены: users, jobs
   framework/           core, composition, http и генератор
   plugins/             технические возможности: БД, пароли, клиент, системные маршруты
   middlewares/         идентификация и уровни HTTP-доступа
@@ -118,4 +118,5 @@ GitHub Actions запускает эти же проверки на Node.js 22.
 - [Клиент](frontend.md) — Options API, состояние, SCSS и адаптивность.
 - [Авторизация](authentication.md) — регистрация, JWT, cookie, сессии и роли.
 - [Генератор](generator.md) — Prisma как источник DTO и схем.
+- [Домен jobs](jobs.md) — статусы, HTTP API и API конвейера.
 - [План сборщика](collector-plan.md) — модульная архитектура источников вакансий.

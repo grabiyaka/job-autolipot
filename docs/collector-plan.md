@@ -1,7 +1,7 @@
 # План: модульный сборщик вакансий (этап 1 «Сбор»)
 
-Статус: **план**, кода сборщика ещё нет. Готовы схема БД (`jobs` с `userId` и др.)
-и вход/регистрация.
+Статус: **план**, кода сборщика ещё нет. Готовы вход/регистрация и [домен `jobs`](jobs.md):
+сборщик пишет через `JobService.recordFound` и проверяет новизну через `JobService.unknownUrls`.
 
 ## Цель
 
@@ -28,12 +28,12 @@ server/
         fixtures/           сохранённые страницы для тестов парсера
       djinni/ …
       indeed/ …
-  src/jobs/                 домен: JobService.recordFound(userId, cards) → { created, duplicates }
+  src/jobs/                 домен (готов): recordFound(ownerId, jobs) → { created, duplicates, invalid, jobIds }
   src/searches/             домен: поиски пользователя (источник, запрос, локация, фильтры)
 ```
 
 Сборщик — отдельная точка входа рядом с `scripts/`, как `user:create`. В БД он пишет только
-через публичный `JobApi` домена `jobs`, без прямого Prisma. Так ядро не зависит от того,
+через `JobService` домена `jobs`, без прямого Prisma. Так ядро не зависит от того,
 откуда пришли данные.
 
 ## Контракт модуля
@@ -64,11 +64,14 @@ export type JobCard = {
 export type SourceContext = {
   http: HttpClient;                   // ретраи, таймауты, User-Agent
   browser(): Promise<BrowserPage>;    // Playwright поднимается только по требованию
-  /** Известна ли вакансия текущему пользователю (дедуп внутри его выдачи). */
+  /** Известна ли вакансия текущему пользователю; ядро реализует через JobService.unknownUrls. */
   isKnown(url: string): Promise<boolean>;
   log: Logger; signal: AbortSignal;
 };
 ```
+
+`JobCard` по полям совпадает с `JobInput` из `server/src/jobs/JobService.ts`: ядро передаёт
+карточки в `JobService.recordFound` без преобразований и добавляет только `source` модуля.
 
 Модуль подключается явной строкой в `sources.ts`. Динамической загрузки папок не будет:
 так сохраняются автокомплит и проверка типов, и это соответствует правилам проекта
@@ -122,8 +125,7 @@ export type SourceContext = {
 
 ## Порядок работ
 
-1. Домены `searches` (CRUD своих поисков) и `jobs` (`recordFound`, список своих вакансий
-   с фильтром по статусу), API и страница «Вакансии».
+1. Домен `searches` (CRUD своих поисков) и страница «Вакансии» поверх готового `jobs`.
 2. Ядро: `SourceTypes`, `CollectorRunner`, CLI, фейковый источник и тесты.
 3. Первый модуль без входа (API или HTML), чтобы проверить весь путь до БД и UI.
 4. LinkedIn: Playwright, сохранённый профиль, медленный темп, фикстуры.
