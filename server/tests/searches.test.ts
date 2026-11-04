@@ -7,7 +7,7 @@ import { createPrismaClient } from '../plugins/database.js';
 import { createHttpClient, HttpError, pause } from '../plugins/http.js';
 import { JobRepository } from '../src/jobs/JobRepository.js';
 import { JobService } from '../src/jobs/JobService.js';
-import type { JobInput, JobPipelineApi } from '../src/jobs/JobTypes.js';
+import type { JobInput, JobCollectorApi } from '../src/jobs/JobTypes.js';
 import { SearchRepository } from '../src/searches/SearchRepository.js';
 import { SearchService } from '../src/searches/SearchService.js';
 import { titleHas, titleRejection, titleTerms } from '../src/searches/SearchRules.js';
@@ -51,7 +51,7 @@ function fakeSource(id: string, options: FakeOptions) {
 function memoryJobs() {
   const saved = new Map<string, Map<string, JobInput>>();
   const owned = (ownerId: string) => saved.get(ownerId) ?? saved.set(ownerId, new Map()).get(ownerId)!;
-  const jobs: JobPipelineApi = {
+  const jobs: JobCollectorApi = {
     async unknownUrls(ownerId, urls) { return urls.filter((url) => !owned(ownerId).has(url)); },
     async recordFound(ownerId, inputs) {
       const jobIds: string[] = [];
@@ -125,7 +125,7 @@ describe('Searches on SQLite', () => {
     testDatabase?.dispose();
   });
 
-  function serviceWith(jobs: JobPipelineApi, sources: JobSource[], runtime: Partial<SearchRuntime> = {}, pauses: number[] = []) {
+  function serviceWith(jobs: JobCollectorApi, sources: JobSource[], runtime: Partial<SearchRuntime> = {}, pauses: number[] = []) {
     return new SearchService(repository, jobs, sources, {
       http: createHttpClient({ userAgent: 'test', timeoutMs: 1000, retries: 0, pause }),
       browser: noBrowser,
@@ -192,7 +192,7 @@ describe('Searches on SQLite', () => {
         },
       });
       const saved: JobInput[] = [];
-      const recording: JobPipelineApi = { ...jobs, async recordFound(ownerId, inputs) { saved.push(...inputs); return jobs.recordFound(ownerId, inputs); } };
+      const recording: JobCollectorApi = { ...jobs, async recordFound(ownerId, inputs) { saved.push(...inputs); return jobs.recordFound(ownerId, inputs); } };
 
       const report = await serviceWith(recording, [source]).runAdHoc('alice', query, { signal: signal() });
       expect(report).toMatchObject({ fresh: 3, created: 3 });

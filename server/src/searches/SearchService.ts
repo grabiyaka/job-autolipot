@@ -1,7 +1,7 @@
 import type { Actor } from '../../framework/core/actor.js';
 import { ApplicationError } from '../../framework/core/errors.js';
 import type { Clock } from '../../framework/core/runtime.js';
-import type { JobPipelineApi } from '../jobs/JobTypes.js';
+import type { JobCollectorApi } from '../jobs/JobTypes.js';
 import type { SearchRepository } from './SearchRepository.js';
 import { canonicalCards, errorMessage, pageDelay, searchFields, searchQuery, titleRejection } from './SearchRules.js';
 import type { SearchFieldsInput, SearchStopReason, TitleFilter } from './SearchRules.js';
@@ -113,7 +113,7 @@ function boundBrowser(browser: Browser, signal: AbortSignal): Browser {
 export class SearchService {
   constructor(
     private readonly searches: SearchRepository,
-    private readonly jobs: JobPipelineApi,
+    private readonly jobs: JobCollectorApi,
     private readonly registry: readonly JobSource[],
     private readonly runtime: SearchRuntime,
     private readonly clock: Clock,

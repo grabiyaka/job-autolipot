@@ -13,7 +13,10 @@ function toJob(record: JobRecord): Job {
   };
 }
 
-type JobChange = Readonly<{ status: JobStatus; score?: number; why?: string | null; redFlags?: string[] }>;
+type JobChange = Readonly<{
+  status: JobStatus; score?: number; why?: string | null; redFlags?: string[]; profileRevision?: number | null;
+}>;
+type TwinCandidate = Readonly<{ id: string; company: string; title: string }>;
 
 /** Every query is scoped to the owner, so another user's job behaves as missing. */
 export class JobRepository {
@@ -76,8 +79,49 @@ export class JobRepository {
     return count ? this.find(ownerId, id) : null;
   }
 
+  listForScoring(ownerId: string, limit?: number): Promise<Job[]> {
+    return this.findJobs({ userId: ownerId, status: 'found', description: { not: null } }, limit);
+  }
+
+  listUnsynced(ownerId: string): Promise<Job[]> {
+    return this.findJobs({ userId: ownerId, status: 'queued', trackerId: null });
+  }
+
+  /**
+   * Company and title of jobs that could be a twin: in one of the statuses, rejected with a score, or
+   * sent to Job-Tracker. Matching ignores case, so it happens in TS.
+   */
+  listTwinCandidates(ownerId: string, exceptId: string, statuses: readonly JobStatus[]): Promise<TwinCandidate[]> {
+    return this.prisma.job.findMany({
+      where: { userId: ownerId, id: { not: exceptId }, OR: [
+        { status: { in: [...statuses] } },
+        { status: 'rejected', score: { not: null } },
+        { trackerId: { not: null } },
+      ] },
+      select: { id: true, company: true, title: true },
+      orderBy: [{ foundAt: 'asc' }, { id: 'asc' }],
+    });
+  }
+
+  /** Sets the Job-Tracker ID only while none is stored; returns null otherwise. */
+  async setTrackerId(ownerId: string, id: string, trackerId: string): Promise<Job | null> {
+    const { count } = await this.prisma.job.updateMany({ where: { id, userId: ownerId, trackerId: null }, data: { trackerId } });
+    return count ? this.find(ownerId, id) : null;
+  }
+
+  async findByTrackerId(ownerId: string, trackerId: string): Promise<Job | null> {
+    const record = await this.prisma.job.findFirst({ where: { userId: ownerId, trackerId } });
+    return record ? toJob(record) : null;
+  }
+
   async delete(ownerId: string, id: string): Promise<boolean> {
     const { count } = await this.prisma.job.deleteMany({ where: { id, userId: ownerId } });
     return count > 0;
+  }
+
+  /** Oldest first, so a backlog is processed in the order it was found. */
+  private async findJobs(where: Prisma.JobWhereInput, limit?: number): Promise<Job[]> {
+    const records = await this.prisma.job.findMany({ where, orderBy: [{ foundAt: 'asc' }, { id: 'asc' }], ...(limit ? { take: limit } : {}) });
+    return records.map(toJob);
   }
 }

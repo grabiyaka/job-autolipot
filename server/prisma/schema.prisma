@@ -16,17 +16,18 @@ enum UserRole {
 }
 
 model User {
-  id           String        @id @default(uuid())
-  email        String        @unique
-  name         String
-  passwordHash String
-  role         UserRole      @default(user)
-  disabled     Boolean       @default(false)
-  createdAt    DateTime      @default(now())
-  sessions     AuthSession[]
-  jobs         Job[]
-  searches     Search[]
-  answers      Answer[]
+  id             String          @id @default(uuid())
+  email          String          @unique
+  name           String
+  passwordHash   String
+  role           UserRole        @default(user)
+  disabled       Boolean         @default(false)
+  createdAt      DateTime        @default(now())
+  sessions       AuthSession[]
+  jobs           Job[]
+  searches       Search[]
+  answers        Answer[]
+  trackerProfile TrackerProfile?
 
   @@map("users")
 }
@@ -61,29 +62,33 @@ enum JobStatus {
 /// Найденная вакансия пользователя. URL канонизируется модулем источника и вместе с userId
 /// служит ключом дедупликации: одну вакансию могут независимо найти разные пользователи.
 model Job {
-  id           String        @id @default(uuid())
-  userId       String
-  url          String
+  id              String        @id @default(uuid())
+  userId          String
+  url             String
   /// Код модуля-источника: linkedin, djinni, indeed, …
-  source       String
+  source          String
   /// ID вакансии на стороне источника, если он есть.
-  externalId   String?
-  company      String
-  title        String
-  location     String?
-  description  String?
+  externalId      String?
+  company         String
+  title           String
+  location        String?
+  description     String?
   /// Сырые данные карточки от модуля (JSON-строка), чтобы не терять поля, не вошедшие в схему.
-  raw          String?
-  score        Int?
-  why          String?
+  raw             String?
+  score           Int?
+  why             String?
   /// JSON-массив строк.
-  redFlags     String?
-  status       JobStatus     @default(found)
-  postedAt     DateTime?
-  foundAt      DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  applications Application[]
+  redFlags        String?
+  status          JobStatus     @default(found)
+  /// ID JobOpportunity в Job-Tracker; null — вакансия ещё не отправлена.
+  trackerId       String?
+  /// Ревизия профиля Job-Tracker, по которой выставлена оценка.
+  profileRevision Int?
+  postedAt        DateTime?
+  foundAt         DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applications    Application[]
 
   @@unique([userId, url])
   @@unique([userId, source, externalId])
@@ -92,25 +97,40 @@ model Job {
   @@map("jobs")
 }
 
+// ───────────── Job-Tracker (этап «Отбор») ─────────────
+
+/// Кэш профиля пользователя из Job-Tracker, по которому scorer оценивает вакансии.
+model TrackerProfile {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  revision  Int
+  etag      String?
+  markdown  String
+  fetchedAt DateTime
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("tracker_profiles")
+}
+
 // ───────────── Поиски (этап «Сбор») ─────────────
 
 /// Сохранённый поиск пользователя на одном источнике. Сборщик прогоняет все включённые поиски.
 model Search {
-  id        String      @id @default(uuid())
-  userId    String
+  id           String      @id @default(uuid())
+  userId       String
   /// Код модуля-источника из реестра `src/searches/SearchSources.ts`.
-  source    String
-  keywords  String
-  location  String?
+  source       String
+  keywords     String
+  location     String?
   /// JSON-массив слов: в названии вакансии должно быть хотя бы одно (пусто — без ограничения).
   includeTitle String?
   /// JSON-массив слов: вакансия с любым из них в названии отсеивается до открытия её страницы.
   excludeTitle String?
-  enabled   Boolean     @default(true)
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
-  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  runs      SearchRun[]
+  enabled      Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runs         SearchRun[]
 
   @@index([userId])
   @@map("searches")

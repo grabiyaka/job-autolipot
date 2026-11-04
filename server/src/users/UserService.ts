@@ -45,6 +45,11 @@ export class UserService implements UserApi {
     return this.users.create({ ...account, email, name: input.name.trim() }, passwordHash);
   }
 
+  async profile(userId: string): Promise<UserProfile | null> {
+    const account = await this.users.findById(userId);
+    return account && !account.disabled ? account.user : null;
+  }
+
   private openSession(userId: string): Promise<UserSession> {
     const expiresAt = new Date(this.clock.now().getTime() + this.sessionTtlSeconds * 1000);
     return this.users.createSession(this.identifiers.next(), userId, expiresAt);

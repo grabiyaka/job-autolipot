@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  cardsFromLinks, cleanTitle, headerLocation, isEasyApply, isWall, jobDescription, jobIdFromUrl, jobPageDetails,
-  parsePageTitle, searchUrl,
+  cardsFromLinks, cleanTitle, headerLocation, isAiSearchPage, isEasyApply, isSearchPage, isWall, jobDescription, jobIdFromUrl,
+  jobPageDetails, mergeCards, parsePageTitle, searchUrl,
 } from '../src/searches/LinkedinParser.js';
 import { linkedinSource } from '../src/searches/LinkedinSource.js';
 import { BrowserError, SourceStopError } from '../src/searches/SearchTypes.js';
@@ -11,6 +11,10 @@ import type { Browser, BrowserLink, JobCard, SourceContext } from '../src/search
 /** Captured from live LinkedIn on 2026-11-03 (tracking ids blanked, page footer dropped). */
 const searchFixture = JSON.parse(readFileSync(new URL('./fixtures/linkedin/search-page.json', import.meta.url), 'utf8')) as {
   url: string; title: string; links: BrowserLink[];
+};
+/** Live 2026-11-03: links() of one classic results page after opening and after each of three scroll(1). */
+const scrolledFixture = JSON.parse(readFileSync(new URL('./fixtures/linkedin/search-page-scrolled.json', import.meta.url), 'utf8')) as {
+  url: string; reads: BrowserLink[][];
 };
 const fullDescriptionFixture = JSON.parse(readFileSync(new URL('./fixtures/linkedin/job-page-full-description.json', import.meta.url), 'utf8')) as {
   title: string; text: string;
@@ -22,9 +26,9 @@ const jobFixture = JSON.parse(readFileSync(new URL('./fixtures/linkedin/job-page
 describe('LinkedIn parser', () => {
   it('builds newest-first search URLs; "Remote" becomes the remote filter', () => {
     expect(searchUrl({ keywords: 'node.js', location: 'Remote' }, 0))
-      .toBe('https://www.linkedin.com/jobs/search/?keywords=node.js&f_WT=2&sortBy=DD');
+      .toBe('https://www.linkedin.com/jobs/search/?keywords=node.js&f_WT=2&sortBy=DD&skipRedirect=true');
     expect(searchUrl({ keywords: 'vue developer', location: 'Dublin, Ireland' }, 2))
-      .toBe('https://www.linkedin.com/jobs/search/?keywords=vue+developer&location=Dublin%2C+Ireland&sortBy=DD&start=50');
+      .toBe('https://www.linkedin.com/jobs/search/?keywords=vue+developer&location=Dublin%2C+Ireland&sortBy=DD&start=50&skipRedirect=true');
   });
 
   it('recognizes job links and nothing else', () => {
@@ -44,6 +48,33 @@ describe('LinkedIn parser', () => {
     expect(cards.map((card) => card.title)).toContain('Godot Game Developer | $100/hr | Remote');
     expect(new Set(cards.map((card) => card.externalId)).size).toBe(15);
     expect(cleanTitle('Backend Engineer with verification Backend Engineer with verification')).toBe('Backend Engineer');
+  });
+
+  it('gathers all 25 cards of a virtualized results page from the reads between scrolls', () => {
+    const counts = scrolledFixture.reads.map((links) => cardsFromLinks(links).length);
+    expect(counts).toEqual([7, 13, 20, 25]);
+    // Cards that left the view can drop out of a later read; the merge keeps every card seen.
+    let cards: JobCard[] = [];
+    for (const links of scrolledFixture.reads) cards = mergeCards(cards, cardsFromLinks(links));
+    expect(cards).toHaveLength(25);
+    expect(new Set(cards.map((card) => card.externalId)).size).toBe(25);
+    expect(cards.every((card) => card.title)).toBe(true);
+    expect(cards[0]!.title).toBe('Lead Software Engineer');
+  });
+
+  it('keeps first-seen order and fills a missing title when merging reads', () => {
+    const card = (id: string, title: string): JobCard => ({ url: `https://www.linkedin.com/jobs/view/${id}/`, externalId: id, title, company: '' });
+    expect(mergeCards([card('1', ''), card('2', 'B')], [card('3', 'C'), card('1', 'A'), card('2', 'other')]))
+      .toEqual([card('1', 'A'), card('2', 'B'), card('3', 'C')]);
+  });
+
+  it('tells the classic results list from the AI search', () => {
+    expect(isSearchPage(scrolledFixture.url)).toBe(true);
+    expect(isSearchPage('https://www.linkedin.com/jobs/search/?currentJobId=1&keywords=x')).toBe(true);
+    const ai = 'https://www.linkedin.com/jobs/search-results/?currentJobId=4454439636&keywords=backend%20developer';
+    expect(isSearchPage(ai)).toBe(false);
+    expect(isAiSearchPage(ai)).toBe(true);
+    expect(isAiSearchPage(scrolledFixture.url)).toBe(false);
   });
 
   it('reads company, title, location and description from a live job page', () => {
@@ -168,8 +199,24 @@ describe('LinkedIn source on a scripted browser', () => {
     const pages = await collect(linkedinSource.search(contextWith(browser, pauses), query));
     expect(pages.map((page) => page.map((card) => card.externalId))).toEqual([['1', '2']]);
     expect(opened).toEqual([page0, page1]);
-    // Page 1: two scrolls (the second loads nothing new). Page 2: three render waits, still empty.
-    expect(pauses).toEqual([1500, 1500, 2000, 2000, 2000]);
+    // Page 1: three scrolls (the last two add nothing). Page 2: three render waits, still empty.
+    expect(pauses).toEqual([1500, 1500, 1500, 2000, 2000, 2000]);
+  });
+
+  it('keeps the cards that scrolled out of view and stops at a full page', async () => {
+    const full = Array.from({ length: 25 }, (_, index) => index + 1);
+    const { browser } = fakeBrowser({
+      [page0]: [
+        { url: page0, title: 'Jobs', links: full.slice(0, 10).map((id) => jobLink(id)) },
+        { url: page0, title: 'Jobs', links: full.slice(8, 20).map((id) => jobLink(id)) },
+        { url: page0, title: 'Jobs', links: full.slice(15).map((id) => jobLink(id)) },
+      ],
+      [page1]: { url: page1, title: 'Jobs', links: [] },
+    });
+    const pauses: number[] = [];
+    const pages = await collect(linkedinSource.search(contextWith(browser, pauses), query));
+    expect(pages[0]!.map((card) => card.externalId)).toEqual(full.map(String));
+    expect(pauses.filter((ms) => ms === 1500)).toHaveLength(2);
   });
 
   it('waits for cards that render after the page has loaded', async () => {
@@ -188,6 +235,8 @@ describe('LinkedIn source on a scripted browser', () => {
   it('stops on a sign-in wall and on an unexpected page', async () => {
     const walled = fakeBrowser({ [page0]: { url: 'https://www.linkedin.com/authwall?trk=x', title: 'Sign in' } });
     await expect(collect(linkedinSource.search(contextWith(walled.browser), query))).rejects.toBeInstanceOf(SourceStopError);
+    const ai = fakeBrowser({ [page0]: { url: 'https://www.linkedin.com/jobs/search-results/?currentJobId=1&keywords=node.js', title: 'Jobs' } });
+    await expect(collect(linkedinSource.search(contextWith(ai.browser), query))).rejects.toThrow(/AI-поиск/);
     const elsewhere = fakeBrowser({ [page0]: { url: 'https://www.linkedin.com/feed/', title: 'Feed' } });
     await expect(collect(linkedinSource.search(contextWith(elsewhere.browser), query))).rejects.toThrow(/неожиданную страницу/);
   });

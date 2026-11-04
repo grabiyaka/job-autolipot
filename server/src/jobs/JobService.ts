@@ -1,14 +1,19 @@
 import type { Actor } from '../../framework/core/actor.js';
 import { ApplicationError } from '../../framework/core/errors.js';
 import type { JobRepository } from './JobRepository.js';
-import type { JobFoundResult, JobInput, JobPipelineApi } from './JobTypes.js';
+import { jobStatuses, twinKey } from './JobTypes.js';
+import type { JobDecision, JobFoundResult, JobInput, JobPipelineApi, JobScore, JobStatus, PipelineJob } from './JobTypes.js';
 
-export type { JobInput } from './JobTypes.js';
+export { jobStatuses } from './JobTypes.js';
+export type { JobDecision, JobInput, JobScore, JobStatus, PipelineJob } from './JobTypes.js';
 
-export const jobStatuses = [
-  'found', 'scored', 'rejected', 'queued', 'applying', 'applied', 'needs_input', 'failed', 'skipped',
-] as const;
-export type JobStatus = typeof jobStatuses[number];
+const jobDecisions: readonly JobDecision[] = ['queued', 'rejected', 'skipped'];
+
+/**
+ * A job in one of these statuses, rejected after a score (by the model), or already sent to Job-Tracker
+ * makes a same-named job a repeat. A job rejected by the title filter has no score and is not a twin.
+ */
+const twinStatuses: readonly JobStatus[] = ['scored', 'queued', 'applying', 'applied', 'needs_input'];
 
 /** A person may only queue, reject or skip; other statuses come from the scorer and the applier. */
 export const userJobStatuses = ['queued', 'rejected', 'skipped'] as const;
@@ -26,23 +31,7 @@ const transitions: Readonly<Record<JobStatus, readonly JobStatus[]>> = {
   applied: [],
 };
 
-export type Job = Readonly<{
-  id: string;
-  url: string;
-  source: string;
-  externalId: string | null;
-  company: string;
-  title: string;
-  location: string | null;
-  description: string | null;
-  score: number | null;
-  why: string | null;
-  redFlags: string[];
-  status: JobStatus;
-  postedAt: string | null;
-  foundAt: string;
-  updatedAt: string;
-}>;
+export type Job = PipelineJob & Readonly<{ foundAt: string; updatedAt: string }>;
 /** Lists omit the long description. */
 export type JobSummary = Omit<Job, 'description'>;
 export type JobPage = Readonly<{ items: JobSummary[]; total: number; page: number; limit: number }>;
@@ -61,8 +50,6 @@ export type NewJob = Readonly<{
   location: string | null; description: string | null; postedAt: Date | null; raw: string | null;
   status: 'found' | 'rejected'; why: string | null;
 }>;
-
-export type JobScore = Readonly<{ score: number; why?: string | null; redFlags?: readonly string[] }>;
 
 /** Only http(s), no fragment, no credentials. Source modules strip their own tracking parameters. */
 export function canonicalJobUrl(value: string): string {
@@ -174,9 +161,56 @@ export class JobService implements JobPipelineApi {
     const job = await this.owned(ownerId, id);
     requireTransition(job.status, 'scored');
     const redFlags = (input.redFlags ?? []).map((flag) => flag.trim()).filter(Boolean);
+    const profileRevision = input.profileRevision ?? null;
+    if (profileRevision !== null && !Number.isSafeInteger(profileRevision)) {
+      throw new ApplicationError('INVALID_JOB_SCORE', 'Ревизия профиля — целое число.', 400);
+    }
     return this.changed(await this.jobs.update(ownerId, id, job.status, {
-      status: 'scored', score: input.score, why: input.why?.trim() || null, redFlags,
+      status: 'scored', score: input.score, why: input.why?.trim() || null, redFlags, profileRevision,
     }));
+  }
+
+  async listForScoring(ownerId: string, limit?: number): Promise<Job[]> {
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+      throw new ApplicationError('INVALID_QUERY', 'limit — целое число от 1.', 400);
+    }
+    return this.jobs.listForScoring(ownerId, limit);
+  }
+
+  async findTwin(ownerId: string, company: string, title: string, exceptId: string): Promise<Job | null> {
+    const key = twinKey(company, title);
+    const candidates = await this.jobs.listTwinCandidates(ownerId, exceptId, twinStatuses);
+    const twin = candidates.find((candidate) => twinKey(candidate.company, candidate.title) === key);
+    return twin ? this.jobs.find(ownerId, twin.id) : null;
+  }
+
+  async recordDecision(ownerId: string, id: string, status: JobDecision, why?: string): Promise<Job> {
+    if (!jobDecisions.includes(status)) {
+      throw new ApplicationError('INVALID_JOB_STATUS', 'Решение — queued, rejected или skipped.', 400);
+    }
+    const job = await this.owned(ownerId, id);
+    requireTransition(job.status, status);
+    return this.changed(await this.jobs.update(ownerId, id, job.status, {
+      status, ...(why !== undefined ? { why: why.trim() || null } : {}),
+    }));
+  }
+
+  listUnsynced(ownerId: string): Promise<Job[]> {
+    return this.jobs.listUnsynced(ownerId);
+  }
+
+  async markSynced(ownerId: string, id: string, trackerId: string): Promise<Job> {
+    const value = trackerId.trim();
+    if (!value) throw new ApplicationError('INVALID_TRACKER_ID', 'Нужен ID вакансии в Job-Tracker.', 400);
+    const job = await this.owned(ownerId, id);
+    if (job.trackerId === value) return job;
+    const synced = job.trackerId === null ? await this.jobs.setTrackerId(ownerId, id, value) : null;
+    if (!synced) throw new ApplicationError('JOB_ALREADY_SYNCED', 'Вакансия уже связана с другой записью Job-Tracker.', 409);
+    return synced;
+  }
+
+  findByTrackerId(ownerId: string, trackerId: string): Promise<Job | null> {
+    return this.jobs.findByTrackerId(ownerId, trackerId.trim());
   }
 
   async recordStatus(ownerId: string, id: string, status: JobStatus): Promise<Job> {

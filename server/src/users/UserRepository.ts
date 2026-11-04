@@ -25,6 +25,11 @@ export class UserRepository implements UserRepositoryContract {
     return user ? { user: profile(user), passwordHash: user.passwordHash, disabled: user.disabled } : null;
   }
 
+  async findById(id: string): Promise<UserCredentials | null> {
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    return user ? { user: profile(user), passwordHash: user.passwordHash, disabled: user.disabled } : null;
+  }
+
   async create(input: Omit<UserCreateInput, 'password'>, passwordHash: string): Promise<UserProfile> {
     try {
       return profile(await this.prisma.user.create({ data: { ...input, passwordHash } }));

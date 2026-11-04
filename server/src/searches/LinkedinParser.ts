@@ -17,7 +17,11 @@ const idPattern = /^[0-9]{1,20}$/;
 const slugIdPattern = /^[a-z0-9%_.-]*-([0-9]{1,20})$/; // /jobs/view/backend-engineer-at-acme-1234567890/
 const wallPaths = ['/login', '/authwall', '/checkpoint', '/uas/'];
 
-/** Newest first. A location "Remote" becomes the remote filter instead of a place. */
+/**
+ * Newest first. A location "Remote" becomes the remote filter instead of a place.
+ * `skipRedirect=true` keeps the classic results list: since 2026-11-03 LinkedIn sends this account from
+ * /jobs/search/ to the AI search (/jobs/search-results/), whose cards are not links and carry no job id.
+ */
 export function searchUrl(query: SearchQuery, page: number): string {
   const params = new URLSearchParams({ keywords: query.keywords });
   const location = query.location?.trim();
@@ -25,6 +29,7 @@ export function searchUrl(query: SearchQuery, page: number): string {
   else if (location) params.set('location', location);
   params.set('sortBy', 'DD');
   if (page > 0) params.set('start', String(page * resultsPerPage));
+  params.set('skipRedirect', 'true');
   return `${linkedinBase}/jobs/search/?${params.toString()}`;
 }
 
@@ -60,8 +65,19 @@ export function isWall(value: string): boolean {
   return wallPaths.some((prefix) => path.startsWith(prefix));
 }
 
+const pathOf = (value: string): string | undefined => {
+  try { return new URL(value).pathname; } catch { return undefined; }
+};
+
+/** The classic results list, whose cards are /jobs/view/ links. */
 export function isSearchPage(value: string): boolean {
-  try { return new URL(value).pathname.startsWith('/jobs/search'); } catch { return false; }
+  const path = pathOf(value);
+  return path === '/jobs/search' || path === '/jobs/search/';
+}
+
+/** The AI search: its cards have no links, so job ids cannot be read from it. */
+export function isAiSearchPage(value: string): boolean {
+  return pathOf(value)?.startsWith('/jobs/search-results') ?? false;
 }
 
 /**
@@ -89,6 +105,20 @@ export function cardsFromLinks(links: readonly BrowserLink[]): JobCard[] {
     if (!titles.get(id)) titles.set(id, title);
   }
   return [...titles].map(([id, title]) => ({ url: jobViewUrl(id), externalId: id, title, company: '' }));
+}
+
+/**
+ * Cards seen so far plus the cards of a later read, in first-seen order. The results list is virtualized:
+ * a card renders only once scrolled into view, so each read shows part of the page.
+ */
+export function mergeCards(seen: readonly JobCard[], more: readonly JobCard[]): JobCard[] {
+  const byUrl = new Map(seen.map((card) => [card.url, card]));
+  for (const card of more) {
+    const known = byUrl.get(card.url);
+    if (!known) byUrl.set(card.url, card);
+    else if (!known.title && card.title) byUrl.set(card.url, { ...known, title: card.title });
+  }
+  return [...byUrl.values()];
 }
 
 /**

@@ -1,5 +1,6 @@
 import {
-  cardsFromLinks, hasDescription, isSearchPage, isWall, jobIdFromUrl, jobPageDetails, jobViewUrl, searchUrl,
+  cardsFromLinks, hasDescription, isAiSearchPage, isSearchPage, isWall, jobIdFromUrl, jobPageDetails, jobViewUrl, mergeCards,
+  resultsPerPage, searchUrl,
 } from './LinkedinParser.js';
 import { BrowserError, SourceStopError } from './SearchTypes.js';
 import type { JobCard, JobDetails, JobSource, SearchQuery, SourceContext } from './SearchTypes.js';
@@ -7,7 +8,8 @@ import type { JobCard, JobDetails, JobSource, SearchQuery, SourceContext } from 
 /**
  * LinkedIn through the shared, signed-in agent Chromium (read-only browser).
  *
- *   search:  open a search page (newest first), scroll a few times so more cards load, read the job links;
+ *   search:  open the classic search page (newest first), scroll the results list a screen at a time and
+ *            gather the job links of every read;
  *            the next page is the same search with `start` moved by 25
  *   details: open https://www.linkedin.com/jobs/view/<id>/ and read company, location and description
  *
@@ -15,8 +17,13 @@ import type { JobCard, JobDetails, JobSource, SearchQuery, SourceContext } from 
  * authwall or checkpoint page stops the search and the other LinkedIn searches of the run.
  */
 
-/** Scrolls per search page: on 2026-11-03 three scrolls loaded 17 of 25 cards, a fourth added none. */
-const scrollsPerPage = 3;
+/**
+ * The results list is virtualized: a card renders only once it has been in view, so a big scroll jumps over
+ * the middle of the list (live 2026-11-03: scroll(5) gave 7 + 7 of 25). One screen at a time with the cards
+ * of every read gathered gave 7 → 13 → 20 → 25 on two searches. The list ends after two reads add nothing.
+ */
+const maxScrolls = 8;
+const idleScrollsToStop = 2;
 const scrollWaitMs = 1500;
 /** Pages after the first render their cards a second or two after loading; an empty read is retried. */
 const renderRetries = 3;
@@ -36,6 +43,9 @@ function stopIfWalled(url: string): void {
 async function searchPage(context: SourceContext, query: SearchQuery, page: number): Promise<JobCard[]> {
   const opened = await context.browser.open(searchUrl(query, page));
   stopIfWalled(opened.url);
+  if (isAiSearchPage(opened.url)) {
+    throw new SourceStopError('LinkedIn открыл AI-поиск (/jobs/search-results) вместо обычной выдачи: в нём нет ссылок на вакансии');
+  }
   if (!isSearchPage(opened.url)) throw new BrowserError(`поиск LinkedIn открыл неожиданную страницу: ${opened.url}`);
 
   let cards = cardsFromLinks((await context.browser.links()).links);
@@ -45,14 +55,15 @@ async function searchPage(context: SourceContext, query: SearchQuery, page: numb
   }
   // Still no cards after the render wait: the search has no (more) results.
   if (!cards.length) return cards;
-  for (let step = 0; step < scrollsPerPage; step++) {
-    await context.browser.scroll(5);
+  let idle = 0;
+  for (let step = 0; step < maxScrolls && idle < idleScrollsToStop && cards.length < resultsPerPage; step++) {
+    await context.browser.scroll(1);
     await context.pause(scrollWaitMs);
     const { url, links } = await context.browser.links();
     stopIfWalled(url);
-    const more = cardsFromLinks(links);
-    if (more.length <= cards.length) break;
-    cards = more;
+    const merged = mergeCards(cards, cardsFromLinks(links));
+    idle = merged.length > cards.length ? 0 : idle + 1;
+    cards = merged;
   }
   return cards;
 }

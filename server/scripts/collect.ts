@@ -3,8 +3,8 @@ import { parseArgs } from 'node:util';
 import { createCollector } from '../framework/composition/create-collector.js';
 import { defaultBrokerSocket } from '../plugins/browser-broker.js';
 import { searchSources } from '../src/searches/SearchSources.js';
-import type { SearchRunReport, SearchStopReason } from '../src/searches/SearchService.js';
 import type { Logger } from '../src/searches/SearchTypes.js';
+import { adHocSearch, collectOptions, maxMinutes, searchReportLines } from './pipeline-cli.js';
 
 const usage = `Сбор вакансий.
 
@@ -30,43 +30,18 @@ const log: Logger = {
   warn: (message) => console.warn(`! ${message}`),
 };
 
-const stopReasons: Record<SearchStopReason, string> = {
-  end: 'выдача закончилась',
-  known: 'дальше уже известные вакансии',
-  limit: 'достигнут предел страниц источника',
-  aborted: 'остановлен (Ctrl+C или --max-minutes)',
-  error: 'ошибка',
-};
-
-function printReport(report: SearchRunReport, dryRun: boolean): void {
-  const saved = dryRun ? 'не записано (--dry-run)' : `записано ${report.created}, дублей ${report.duplicates}`;
-  console.log(`\n${report.source} «${report.query.keywords}»${report.query.location ? ` (${report.query.location})` : ''}`);
-  console.log(`  страниц ${report.pages}, карточек ${report.seen}, новых ${report.fresh}, `
-    + `из них отсеяно по названию ${report.filtered}; ${saved}, некорректных ${report.invalid}`);
-  console.log(`  остановка: ${stopReasons[report.stopped]}${report.error ? ` — ${report.error}` : ''}`);
-}
-
-const words = (value: string | undefined): string[] | undefined => value?.split(',').map((word) => word.trim()).filter(Boolean);
-
 async function main(): Promise<void> {
-  const { values } = parseArgs({ options: {
-    user: { type: 'string' }, source: { type: 'string' }, query: { type: 'string' }, location: { type: 'string' },
-    include: { type: 'string' }, exclude: { type: 'string' },
-    'dry-run': { type: 'boolean' }, 'max-minutes': { type: 'string', default: '60' }, help: { type: 'boolean' },
-  } });
+  const { values } = parseArgs({ options: collectOptions });
   if (values.help) { console.log(usage); return; }
-  const adHoc = [values.source, values.query, values.location, values.include, values.exclude].some((value) => value !== undefined);
-  if (adHoc && (!values.user || !values.source || !values.query)) {
-    throw new Error(`Для разового поиска укажите --user, --source и --query.\n\n${usage}`);
-  }
-  const maxMinutes = Number(values['max-minutes']);
-  if (!Number.isFinite(maxMinutes) || maxMinutes <= 0) throw new Error('--max-minutes — положительное число.');
+  let adHoc: ReturnType<typeof adHocSearch>;
+  try { adHoc = adHocSearch(values); } catch (error) { throw new Error(`${error instanceof Error ? error.message : error}\n\n${usage}`); }
+  const minutes = maxMinutes(values['max-minutes']);
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error('DATABASE_URL не задан: выполните npm run setup в корне проекта (создаст .env).');
 
   const interrupt = new AbortController();
   process.once('SIGINT', () => { log.warn('Остановка по Ctrl+C: дописываю текущую страницу…'); interrupt.abort(); });
-  const signal = AbortSignal.any([interrupt.signal, AbortSignal.timeout(maxMinutes * 60_000)]);
+  const signal = AbortSignal.any([interrupt.signal, AbortSignal.timeout(minutes * 60_000)]);
   const dryRun = values['dry-run'] ?? false;
 
   const collector = createCollector(databaseUrl, process.env.AGENT_BROWSER_SOCKET || defaultBrokerSocket, log);
@@ -77,13 +52,10 @@ async function main(): Promise<void> {
       if (!ownerId) throw new Error(`Активный пользователь ${values.user} не найден. Создайте его: npm run user:create -- --email ${values.user} --name …`);
     }
     const reports = adHoc
-      ? [await collector.searches.runAdHoc(ownerId!, {
-        source: values.source!, keywords: values.query!, location: values.location ?? null,
-        includeTitle: words(values.include) ?? null, excludeTitle: words(values.exclude) ?? null,
-      }, { signal, dryRun })]
+      ? [await collector.searches.runAdHoc(ownerId!, adHoc, { signal, dryRun })]
       : await collector.searches.runSaved({ signal, dryRun, ...(ownerId ? { ownerId } : {}) });
     if (!reports.length) console.log('Включённых сохранённых поисков нет: добавьте их через POST /api/searches или запустите разовый поиск (--help).');
-    for (const report of reports) printReport(report, dryRun);
+    for (const report of reports) console.log(`\n${searchReportLines(report, dryRun).join('\n')}`);
     if (reports.some((report) => report.stopped === 'error')) process.exitCode = 1;
   } finally { await collector.close(); }
 }

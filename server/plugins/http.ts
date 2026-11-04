@@ -16,9 +16,12 @@ export class HttpError extends Error {
 
 const retriable = (status: number) => status === 429 || status >= 500;
 
-/** fetch with a per-request timeout, a stable User-Agent and a few retries with growing pauses. */
-export function createHttpClient(options: HttpOptions): HttpClient {
-  async function request(url: string, init: RequestInit = {}): Promise<Response> {
+/**
+ * fetch with a per-request timeout, a stable User-Agent and a few retries with growing pauses.
+ * Resolves with the whole response (headers included) when it is 2xx; any other status is an HttpError.
+ */
+export function createHttpRequest(options: HttpOptions): (url: string, init?: RequestInit) => Promise<Response> {
+  return async function request(url: string, init: RequestInit = {}): Promise<Response> {
     const runSignal = init.signal ?? new AbortController().signal;
     for (let attempt = 0; ; attempt++) {
       const signal = AbortSignal.any([runSignal, AbortSignal.timeout(options.timeoutMs)]);
@@ -33,8 +36,12 @@ export function createHttpClient(options: HttpOptions): HttpClient {
       }
       await options.pause(1000 * 2 ** attempt, runSignal);
     }
-  }
+  };
+}
 
+/** Text and JSON over createHttpRequest. */
+export function createHttpClient(options: HttpOptions): HttpClient {
+  const request = createHttpRequest(options);
   return {
     text: async (url, init) => (await request(url, init)).text(),
     json: async <T>(url: string, init?: RequestInit) => await (await request(url, init)).json() as T,

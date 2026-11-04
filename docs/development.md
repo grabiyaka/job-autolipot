@@ -54,6 +54,9 @@ docker compose exec api npm run user:create -- --email admin@example.com --name 
 | `COOKIE_SECURE` | `true` для HTTPS, `false` для локального HTTP. |
 | `PORT`, `HOST` | Адрес API, по умолчанию `127.0.0.1:3400`. |
 | `APP_PORT`, `COMPOSE_PROJECT_NAME` | Опубликованный порт и имя установки Docker Compose. |
+| `AGENT_BROWSER_SOCKET` | Сокет брокера agent Chromium для сборщика, по умолчанию `/run/agent-browser/broker.sock`. |
+| `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_NUM_CTX`, `OLLAMA_TIMEOUT_MS` | Локальная модель для `npm run score`; значения по умолчанию — в `.env.example`. |
+| `JOB_TRACKER_URL`, `JOB_TRACKER_TOKEN` | Job-Tracker: профиль и To Apply ([trackers.md](trackers.md)). Пока хотя бы одно пусто, интеграция выключена. |
 
 Подробнее про вход и cookie — в [authentication.md](authentication.md).
 
@@ -66,9 +69,9 @@ client/
   src/router/          Vue Router
   src/assets/css/      общие стили и SCSS-миксины
 server/
-  src/                 плоские домены: users, jobs, searches (сборщик и модули сайтов)
+  src/                 плоские домены: users, jobs, searches (сборщик и модули сайтов), scoring, trackers
   framework/           core, composition, http и генератор
-  plugins/             технические возможности: БД, пароли, HTTP-клиент, клиент, системные маршруты
+  plugins/             технические возможности: БД, пароли, HTTP-клиент, брокер браузера, Ollama, Job-Tracker, клиент
   middlewares/         идентификация и уровни HTTP-доступа
   prisma/              схема, миграции, domains.json для генератора
   data/                файл SQLite, вне Git

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { canonicalJobUrl, jobStatuses, requireTransition } from '../src/jobs/JobService.js';
+import { twinKey } from '../src/jobs/JobTypes.js';
 
 describe('Job URL', () => {
   it('drops the fragment and keeps the query that identifies the job', () => {
@@ -24,5 +25,19 @@ describe('Job status transitions', () => {
     for (const status of jobStatuses) {
       expect(() => requireTransition('applied', status)).toThrow(expect.objectContaining({ code: 'INVALID_JOB_STATUS' }));
     }
+  });
+});
+
+describe('Job twin key', () => {
+  it('ignores case, spacing and punctuation, including non-Latin letters', () => {
+    expect(twinKey('ACME, Inc.', '  Senior   Vue.js Developer ')).toBe(twinKey('acme inc', 'senior vue js developer'));
+    expect(twinKey('Рога и Копыта', 'Разработчик — Node.js')).toBe(twinKey('рога и копыта', 'разработчик node js'));
+    expect(twinKey('Ｆｕｌｌ Width', 'Dev')).toBe(twinKey('full width', 'dev'));
+  });
+
+  it('keeps company and title apart and tells different jobs apart', () => {
+    expect(twinKey('Acme', 'Vue developer')).not.toBe(twinKey('Acme Vue', 'developer'));
+    expect(twinKey('Acme', 'Vue developer')).not.toBe(twinKey('Acme', 'React developer'));
+    expect(twinKey('Acme', 'Developer 2')).not.toBe(twinKey('Acme', 'Developer'));
   });
 });

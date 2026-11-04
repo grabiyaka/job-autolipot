@@ -25,4 +25,6 @@ export interface UserApi {
   session(sessionId: string, userId: string): Promise<UserSession | null>;
   logout(sessionId: string): Promise<void>;
   create(input: UserCreateInput): Promise<UserProfile>;
+  /** An active user's profile; null for an unknown or disabled user. */
+  profile(userId: string): Promise<UserProfile | null>;
 }

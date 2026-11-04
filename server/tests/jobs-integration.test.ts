@@ -4,7 +4,7 @@ import type { PrismaClient } from '../generated/prisma/client.js';
 import { createPrismaClient } from '../plugins/database.js';
 import { JobRepository } from '../src/jobs/JobRepository.js';
 import { JobService } from '../src/jobs/JobService.js';
-import type { Job, JobPage } from '../src/jobs/JobService.js';
+import type { Job, JobInput, JobPage } from '../src/jobs/JobService.js';
 import { createAuthFixture, createTestDatabase, testAuth } from './auth-fixture.js';
 import type { AuthHeaders } from './auth-fixture.js';
 
@@ -177,5 +177,145 @@ describe('Jobs: owner-scoped HTTP API and pipeline API on SQLite', () => {
 
     const manual = await create(owner, { url: 'https://filter.example.test/3', title: 'X', company: 'Y', rejection: 'nope' });
     expect(manual.statusCode).toBe(400);
+  });
+});
+
+describe('Jobs: scoring and Job-Tracker sync pipeline API on SQLite', () => {
+  let testDatabase: ReturnType<typeof createTestDatabase>;
+  let database: PrismaClient;
+  let jobs: JobService;
+  let ownerId: string;
+  let strangerId: string;
+  let urlCounter = 0;
+
+  beforeAll(async () => {
+    testDatabase = createTestDatabase();
+    database = createPrismaClient(testDatabase.url);
+    jobs = new JobService(new JobRepository(database));
+    const user = (email: string) => database.user.create({ data: { email, name: email, passwordHash: 'unused' } });
+    ownerId = (await user('scoring-owner@example.test')).id;
+    strangerId = (await user('scoring-stranger@example.test')).id;
+  }, 60_000);
+
+  afterAll(async () => {
+    await database?.$disconnect();
+    testDatabase?.dispose();
+  });
+
+  /** Saves one listing and returns its ID; each call gets a new URL. */
+  async function found(userId: string, card: Partial<JobInput> = {}): Promise<string> {
+    const result = await jobs.recordFound(userId, [{
+      url: `https://pipeline.example.test/${++urlCounter}`, source: 'board', title: 'Developer', company: 'Acme',
+      description: 'Text', ...card,
+    }]);
+    expect(result.created).toBe(1);
+    return result.jobIds[0]!;
+  }
+  const missing = { code: 'JOB_NOT_FOUND', statusCode: 404 };
+
+  it('lists found jobs with a description for scoring, oldest first, only for the owner', async () => {
+    const first = await found(ownerId, { title: 'First' });
+    await found(ownerId, { title: 'No description', description: null });
+    const third = await found(ownerId, { title: 'Third' });
+    const scored = await found(ownerId, { title: 'Scored' });
+    await jobs.recordScore(ownerId, scored, { score: 50 });
+    await found(strangerId, { title: 'Stranger' });
+
+    const batch = await jobs.listForScoring(ownerId);
+    expect(batch.map((job) => job.id)).toEqual([first, third]);
+    expect(batch[0]).toMatchObject({ title: 'First', description: 'Text', status: 'found', trackerId: null, profileRevision: null });
+    expect((await jobs.listForScoring(ownerId, 1)).map((job) => job.id)).toEqual([first]);
+    expect((await jobs.listForScoring(strangerId)).map((job) => job.title)).toEqual(['Stranger']);
+    await expect(jobs.listForScoring(ownerId, 0)).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it('stores the profile revision with the score', async () => {
+    const id = await found(ownerId);
+    expect(await jobs.recordScore(ownerId, id, { score: 70, why: 'fits', profileRevision: 3 }))
+      .toMatchObject({ status: 'scored', score: 70, why: 'fits', profileRevision: 3 });
+    await expect(jobs.recordScore(ownerId, id, { score: 70, profileRevision: 1.5 })).rejects.toMatchObject({ statusCode: 400 });
+    await expect(jobs.recordScore(strangerId, id, { score: 10, profileRevision: 1 })).rejects.toMatchObject(missing);
+  });
+
+  it('finds a twin by company and title regardless of case, spacing and punctuation', async () => {
+    const original = await found(ownerId, { company: 'Рога и Копыта, ООО', title: 'Senior  Vue.js Developer' });
+    await jobs.recordScore(ownerId, original, { score: 80 });
+    const repeat = await found(ownerId, { company: 'рога и копыта ооо', title: 'senior vue js developer' });
+
+    expect(await jobs.findTwin(ownerId, 'рога и копыта ооо', 'senior vue js developer', repeat)).toMatchObject({ id: original, status: 'scored' });
+    expect(await jobs.findTwin(ownerId, 'Рога и Копыта, ООО', 'Senior  Vue.js Developer', original)).toBeNull();
+    expect(await jobs.findTwin(ownerId, 'Рога и Копыта', 'Senior Vue.js Developer', repeat)).toBeNull();
+    expect(await jobs.findTwin(strangerId, 'рога и копыта ооо', 'senior vue js developer', repeat)).toBeNull();
+  });
+
+  it('counts as a twin only a job past scoring, rejected by the model or already sent to Job-Tracker', async () => {
+    const twin = (title: string, exceptId: string) => jobs.findTwin(ownerId, 'Twin Co', title, exceptId);
+    const probe = await found(ownerId, { company: 'Other', title: 'Probe' });
+
+    await found(ownerId, { company: 'Twin Co', title: 'Found' });
+    expect(await twin('Found', probe)).toBeNull();
+    const rejected = await found(ownerId, { company: 'Twin Co', title: 'Rejected' });
+    await jobs.recordDecision(ownerId, rejected, 'rejected');
+    expect(await twin('Rejected', probe)).toBeNull();
+    await found(ownerId, { company: 'Twin Co', title: 'Filtered', rejection: 'title filter' });
+    expect(await twin('Filtered', probe)).toBeNull();
+    const modelRejected = await found(ownerId, { company: 'Twin Co', title: 'Model Rejected' });
+    await jobs.recordScore(ownerId, modelRejected, { score: 20, why: 'weak match' });
+    await jobs.recordDecision(ownerId, modelRejected, 'rejected');
+    expect(await twin('Model Rejected', probe)).toMatchObject({ id: modelRejected, status: 'rejected', score: 20 });
+
+    const queued = await found(ownerId, { company: 'Twin Co', title: 'Queued' });
+    await jobs.recordDecision(ownerId, queued, 'queued');
+    expect(await twin('Queued', probe)).toMatchObject({ id: queued });
+
+    const applying = await found(ownerId, { company: 'Twin Co', title: 'Applying' });
+    await jobs.recordDecision(ownerId, applying, 'queued');
+    await jobs.recordStatus(ownerId, applying, 'applying');
+    expect(await twin('Applying', probe)).toMatchObject({ id: applying });
+
+    const syncedThenSkipped = await found(ownerId, { company: 'Twin Co', title: 'Synced' });
+    await jobs.recordDecision(ownerId, syncedThenSkipped, 'queued');
+    await jobs.markSynced(ownerId, syncedThenSkipped, 'jt-twin');
+    await jobs.recordDecision(ownerId, syncedThenSkipped, 'skipped');
+    expect(await twin('Synced', probe)).toMatchObject({ id: syncedThenSkipped, status: 'skipped', trackerId: 'jt-twin' });
+  });
+
+  it('records decisions through the status transitions and replaces the reason only when given', async () => {
+    const id = await found(ownerId, { title: 'Decision' });
+    await jobs.recordScore(ownerId, id, { score: 30, why: 'weak match' });
+    expect(await jobs.recordDecision(ownerId, id, 'rejected')).toMatchObject({ status: 'rejected', why: 'weak match' });
+    expect(await jobs.recordDecision(ownerId, id, 'skipped', ' repeat of another job ')).toMatchObject({ status: 'skipped', why: 'repeat of another job' });
+    await expect(jobs.recordDecision(ownerId, id, 'rejected')).rejects.toMatchObject({ code: 'INVALID_JOB_STATUS', statusCode: 409 });
+    await expect(jobs.recordDecision(ownerId, id, 'applied' as 'queued')).rejects.toMatchObject({ statusCode: 400 });
+    await expect(jobs.recordDecision(strangerId, id, 'queued')).rejects.toMatchObject(missing);
+    expect(await jobs.recordDecision(ownerId, id, 'queued', '')).toMatchObject({ status: 'queued', why: null });
+  });
+
+  it('reports 409 when another process changed the status first', async () => {
+    const id = await found(ownerId, { title: 'Race' });
+    await database.job.update({ where: { id }, data: { status: 'skipped' } });
+    await expect(jobs.recordDecision(ownerId, id, 'rejected')).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it('lists queued jobs not yet sent to Job-Tracker and remembers the tracker ID per owner', async () => {
+    const before = new Set((await jobs.listUnsynced(ownerId)).map((job) => job.id));
+    const first = await found(ownerId, { title: 'Sync first' });
+    const second = await found(ownerId, { title: 'Sync second' });
+    await found(ownerId, { title: 'Not queued' });
+    const strangers = await found(strangerId, { title: 'Stranger queued' });
+    for (const [userId, id] of [[ownerId, first], [ownerId, second], [strangerId, strangers]] as const) {
+      await jobs.recordDecision(userId, id, 'queued');
+    }
+
+    const unsynced = (await jobs.listUnsynced(ownerId)).filter((job) => !before.has(job.id));
+    expect(unsynced.map((job) => job.id)).toEqual([first, second]);
+    expect((await jobs.listUnsynced(strangerId)).map((job) => job.id)).toEqual([strangers]);
+
+    await expect(jobs.markSynced(strangerId, first, 'jt-1')).rejects.toMatchObject(missing);
+    expect(await jobs.markSynced(ownerId, first, ' jt-1 ')).toMatchObject({ id: first, trackerId: 'jt-1', status: 'queued' });
+    expect(await jobs.markSynced(ownerId, first, 'jt-1')).toMatchObject({ trackerId: 'jt-1' });
+    await expect(jobs.markSynced(ownerId, first, 'jt-other')).rejects.toMatchObject({ code: 'JOB_ALREADY_SYNCED', statusCode: 409 });
+    await expect(jobs.markSynced(ownerId, second, '  ')).rejects.toMatchObject({ statusCode: 400 });
+    expect((await jobs.listUnsynced(ownerId)).filter((job) => !before.has(job.id)).map((job) => job.id)).toEqual([second]);
   });
 });

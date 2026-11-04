@@ -1,4 +1,5 @@
-import './plugins/environment.js';
+import { jobTrackerConfigFromEnv } from './plugins/environment.js';
+import { createJobTrackerClient } from './plugins/job-tracker.js';
 import { buildServer } from './app.js';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -10,8 +11,11 @@ if (process.env.COOKIE_SECURE !== undefined && !['true', 'false'].includes(proce
   throw new Error('COOKIE_SECURE must be true or false.');
 }
 
+const trackerConfig = jobTrackerConfigFromEnv();
+
 const server = await buildServer({
   databaseUrl,
+  tracker: trackerConfig && createJobTrackerClient(trackerConfig),
   logger: true,
   auth: {
     secret,

@@ -1,0 +1,331 @@
+{
+ "capturedAt": "2026-11-03",
+ "url": "https://www.linkedin.com/jobs/search/?keywords=backend%20developer&location=Ireland&sortBy=DD&skipRedirect=true",
+ "note": "Classic results list: links() after opening and after each scroll(1); the list is virtualized, so cards render only once scrolled into view. Tracking ids blanked, other query strings dropped.",
+ "reads": [
+  [
+   {
+    "href": "https://www.linkedin.com/help/linkedin/answer/a6889044",
+    "text": "Learn more"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487080158/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Lead Software Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4486304484/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Developer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4406417695/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Senior Full Stack Product Engineer (TypeScript)"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4473941876/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Engineer, Security Business Enablement"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4485020573/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Backend Software Engineer (.NET)"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4485026115/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "API Integration Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487052048/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Senior Flutter Mobile Developer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487080158/?alternateChannel=search&eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=d_flagship3_search_srp_jobs",
+    "text": "Lead Software Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487080158/?alternateChannel=search&refId=x&trackingId=x&trk=d_flagship3_search_srp_jobs",
+    "text": "Lead Software Engineer"
+   }
+  ],
+  [
+   {
+    "href": "https://www.linkedin.com/help/linkedin/answer/a6889044",
+    "text": "Learn more"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487080158/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Lead Software Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4486304484/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Developer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4406417695/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Senior Full Stack Product Engineer (TypeScript)"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4473941876/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Engineer, Security Business Enablement"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4485020573/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Backend Software Engineer (.NET)"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4485026115/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "API Integration Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487052048/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Senior Flutter Mobile Developer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4479447131/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Frontend Web Developer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4471906242/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Java Software Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487027654/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Development Engineer, AWS Direct Connect"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487028781/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "DevOps Engineer | Build from Scratch | Dublin | €65K"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4460039063/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Engineer - App Development"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487040116/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Full Stack Software Engineer, Charles River Development, Officer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487080158/?alternateChannel=search&eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=d_flagship3_search_srp_jobs",
+    "text": "Lead Software Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487080158/?alternateChannel=search&refId=x&trackingId=x&trk=d_flagship3_search_srp_jobs",
+    "text": "Lead Software Engineer"
+   }
+  ],
+  [
+   {
+    "href": "https://www.linkedin.com/help/linkedin/answer/a6889044",
+    "text": "Learn more"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487080158/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Lead Software Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4486304484/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Developer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4406417695/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Senior Full Stack Product Engineer (TypeScript)"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4473941876/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Engineer, Security Business Enablement"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4485020573/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Backend Software Engineer (.NET)"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4485026115/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "API Integration Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487052048/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Senior Flutter Mobile Developer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4479447131/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Frontend Web Developer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4471906242/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Java Software Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487027654/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Development Engineer, AWS Direct Connect"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487028781/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "DevOps Engineer | Build from Scratch | Dublin | €65K"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4460039063/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Engineer - App Development"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487040116/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Full Stack Software Engineer, Charles River Development, Officer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4459408013/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Senior SDET"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487027336/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Junior AI Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4451829448/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Engineer 3, Atlas Growth 3"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487019227/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Senior Security Engineer (Automation) – Financial Services – Dublin 2 (WFH/onsite hybrid)"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487006723/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Full Stack Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4479039586/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "AI Platform Engineer - Integration & HyperAutomation"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4484693635/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "DevOps Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/company/optum/life/",
+    "text": "Optum"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487080158/?alternateChannel=search&eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=d_flagship3_search_srp_jobs",
+    "text": "Lead Software Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487080158/?alternateChannel=search&refId=x&trackingId=x&trk=d_flagship3_search_srp_jobs",
+    "text": "Lead Software Engineer"
+   }
+  ],
+  [
+   {
+    "href": "https://www.linkedin.com/help/linkedin/answer/a6889044",
+    "text": "Learn more"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487080158/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Lead Software Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4486304484/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Developer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4406417695/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Senior Full Stack Product Engineer (TypeScript)"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4473941876/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Engineer, Security Business Enablement"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4485020573/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Backend Software Engineer (.NET)"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4485026115/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "API Integration Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487052048/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Senior Flutter Mobile Developer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4479447131/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Frontend Web Developer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4471906242/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Java Software Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487027654/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Development Engineer, AWS Direct Connect"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487028781/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "DevOps Engineer | Build from Scratch | Dublin | €65K"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4460039063/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Engineer - App Development"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487040116/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Full Stack Software Engineer, Charles River Development, Officer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4459408013/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Senior SDET"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487027336/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Junior AI Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4451829448/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Engineer 3, Atlas Growth 3"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487019227/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Senior Security Engineer (Automation) – Financial Services – Dublin 2 (WFH/onsite hybrid)"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487006723/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Full Stack Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4479039586/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "AI Platform Engineer - Integration & HyperAutomation"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4484693635/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "DevOps Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4484690697/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Sr Software Engineer - Digital Identity"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4484679991/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Junior Data Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487002413/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Senior Full-Stack Developer (Next.js)"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4484682732/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Senior Site Reliability Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4484694266/?eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=flagship3_search_srp_jobs",
+    "text": "Software Engineer - League of Legends"
+   },
+   {
+    "href": "https://www.linkedin.com/company/optum/life/",
+    "text": "Optum"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487080158/?alternateChannel=search&eBP=NON_CHARGEABLE_CHANNEL&refId=x&trackingId=x&trk=d_flagship3_search_srp_jobs",
+    "text": "Lead Software Engineer"
+   },
+   {
+    "href": "https://www.linkedin.com/jobs/view/4487080158/?alternateChannel=search&refId=x&trackingId=x&trk=d_flagship3_search_srp_jobs",
+    "text": "Lead Software Engineer"
+   }
+  ]
+ ]
+}

@@ -1,3 +1,5 @@
+import { createBrokerBrowser } from '../../plugins/browser-broker.js';
+import type { BrokerStatus } from '../../plugins/browser-broker.js';
 import { createPrismaClient } from '../../plugins/database.js';
 import { JobRepository } from '../../src/jobs/JobRepository.js';
 import { JobService } from '../../src/jobs/JobService.js';
@@ -15,6 +17,8 @@ export function createCollector(databaseUrl: string, browserSocket: string, log:
       const found = await users.findByEmail(email.trim().toLowerCase());
       return found && !found.disabled ? found.user.id : null;
     },
+    /** Asks the browser broker whether it answers; rejects with BrowserUnavailableError when it does not. */
+    pingBrowser: (signal?: AbortSignal): Promise<BrokerStatus> => createBrokerBrowser({ socketPath: browserSocket }).ping(signal),
     close: () => prisma.$disconnect(),
   };
 }
