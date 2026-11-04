@@ -122,6 +122,78 @@ npm run browser:check -- --open https://www.linkedin.com/jobs/   # видна с
 
 ## 4. Ежедневное использование
 
+### Первый полный цикл — по шагам
+
+Как сбор переходит в оценку qwen: **никакого переключения нет, связка — статус в базе.**
+Сбор пишет вакансии как `found`. Оценка (`npm run score`) берёт из базы *все* `found` этого
+пользователя, включая оставшиеся с прошлых прогонов, и по одной отправляет их в Ollama
+(модель из `OLLAMA_MODEL`, сейчас `qwen3.5:4b`). `npm run cycle` просто делает оба шага подряд
+в одном процессе. Ollama — системный сервис, отдельно её запускать не нужно; первая вакансия идёт
+~45 с (модель загружается в GPU), дальше ~14 с на каждую.
+
+В первый раз лучше пройти по шагам и смотреть результат на каждом. Все команды — из корня проекта.
+
+**0. Всё ли живо** (секунды):
+
+```bash
+npm run browser:check -- --open https://www.linkedin.com/jobs/   # LinkedIn залогинен
+ollama list | grep qwen3.5                                       # модель скачана
+npm run score -- --user illia.herasymets@gmail.com --limit 1 --dry-run   # JT отвечает, пользователь привязан
+```
+
+Последняя команда ничего не пишет. Успех — строка `профиль rev N`: профиль из JT получен. Если в базе
+уже есть `found`, она заодно оценит одну вакансию, то есть проверит и Ollama; если нет — `queued 0, rejected 0…`,
+и Ollama проверится на шаге 2. Ошибки — в [разделе 5](#5-если-что-то-не-так).
+
+**1. Сбор** (~2–4 минуты): сначала с `--dry-run`, посмотреть, что отсеет фильтр по названию,
+потом та же команда без него:
+
+```bash
+npm run collect -- --user illia.herasymets@gmail.com --source linkedin \
+  --query "node.js" --location Remote \
+  --include "node,typescript,javascript,full stack,fullstack,backend,frontend,software engineer" \
+  --exclude "java,android,ios,c++,qa,data engineer,machine learning,devops,sap,abap"
+```
+
+**2. Пробная оценка** на нескольких вакансиях, без записи:
+
+```bash
+npm run score -- --user illia.herasymets@gmail.com --limit 5 --dry-run
+```
+
+Смотри на строки `+`/`−`: согласен ли ты с оценками и причинами.
+
+**3. Оценка всех найденных**, пока без отправки в Job-Tracker (~14 с на вакансию: 50 вакансий ≈ 12 минут):
+
+```bash
+npm run score -- --user illia.herasymets@gmail.com --no-push
+```
+
+**4. Посмотреть результат** — в терминале или Swagger ([ниже](#где-смотреть-результат)). Если модель
+отклонила то, на что ты подался бы, верни вакансию в `queued` (`PATCH /api/jobs/{id}`).
+
+**5. Отправить отобранное в Job-Tracker:**
+
+```bash
+npm run score -- --user illia.herasymets@gmail.com
+```
+
+Новых `found` уже нет, поэтому оценка ничего не делает, а `queued` уходят в JT:
+`Job-Tracker: отправлено N, …`. Проверь их в JT в списке **To Apply** — с оценкой, verdict и причиной.
+
+**Дальше — одной командой.** Когда шаги выше проверены, ежедневный прогон — это `npm run cycle`
+с тем же поиском (сбор → оценка → отправка), см. [ниже](#сбор-оценка-и-отправка-одной-командой--npm-run-cycle):
+
+```bash
+npm run cycle -- --user illia.herasymets@gmail.com --source linkedin \
+  --query "node.js" --location Remote \
+  --include "node,typescript,javascript,full stack,fullstack,backend,frontend,software engineer" \
+  --exclude "java,android,ios,c++,qa,data engineer,machine learning,devops,sap,abap"
+```
+
+Повторный сбор безопасен: вакансии, которые уже есть в базе (по URL), не пишутся второй раз, а
+повторы с тем же названием и компанией не оцениваются заново (строки `=`).
+
 ### Разовый прогон — основной способ сейчас
 
 Сначала пробный (`--dry-run` ничего не пишет, только печатает):
@@ -302,8 +374,25 @@ npm run cycle -- --user illia.herasymets@gmail.com --skip-collect   # тольк
 
 Веб-страницы вакансий пока нет. Варианты:
 
+- **Вывод самих команд.** `collect`, `score` и `cycle` печатают каждую вакансию строкой
+  `+`/`−` с оценкой и причиной — это первый и самый быстрый взгляд.
+- **Терминал, прямо из базы** (только чтение, сервер запускать не нужно). Из корня проекта;
+  последний аргумент — статус (`queued`, `rejected`, `found`, …):
+
+  ```bash
+  cd server && node -e '
+  const db = require("better-sqlite3")("data/job-autopilot.db", { readonly: true });
+  console.table(db.prepare("select status, count(*) n from jobs group by status").all());
+  for (const j of db.prepare("select score, title, company, why, url from jobs where status = ? order by score desc").all(process.argv[1]))
+    console.log(`${j.score}  ${j.title} — ${j.company}\n     ${j.why}\n     ${j.url}`);
+  ' queued; cd ..
+  ```
+
+  Сначала таблица «сколько в каком статусе», потом вакансии этого статуса от лучшей оценки к худшей.
+  У отсеянных фильтром по названию оценки нет (`null`), причина — `название: исключено «…»`
+  или `название: нет ни одного из …`.
 - **Swagger** (`npm run dev`, `http://localhost:3400/docs`, после входа):
-  `GET /api/jobs?status=found` — найденные, `GET /api/jobs?status=rejected` — отсеянные с причиной
+  `GET /api/jobs?status=queued&sort=score` — отобранные от лучшей оценки, `GET /api/jobs?status=found` — найденные, `GET /api/jobs?status=rejected` — отсеянные с причиной
   в `why`, `GET /api/jobs/{id}` — с описанием, `GET /api/jobs/summary` — счётчики по статусам.
 - Вернуть отсеянную в работу: `PATCH /api/jobs/{id}` с `{"status": "queued"}`. Она уйдёт в JT
   при следующем `npm run score` (или `POST /api/tracker/push`), но без оценки, если модель её не оценивала.
