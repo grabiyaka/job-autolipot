@@ -107,7 +107,11 @@ costMicros, guardLog, runDir }`. Настройки из `.env` даёт `claude
 - **PreToolUse.** `browser_click`, `browser_type`, `browser_select_option` и поля `browser_fill_form`
   проверяются по реальной роли, имени и тексту ref из `refs.json`. Слова агента проверяются тоже:
   для клика — весь вызов, для ввода и выбора — только `element` (иначе ответ со словом «send»
-  дал бы запрет). Любое совпадение с submit-словами означает submit.
+  дал бы запрет). Любое совпадение с submit-словами означает submit — кроме элементов форм:
+  если все ref вызова по реальной роли `checkbox`, `radio`, `textbox`, `searchbox`, `combobox`, `listbox`,
+  `option`, `switch`, `spinbutton` или `slider`, это никогда не отправка, что бы ни было в подписи
+  (флажок «By submitting this application, I agree…» на Blackwall, живой пилот 2026-11-05).
+  Текст-подпись рядом (`generic`) остаётся под проверкой: агент кликает сам флажок.
   - Ref, которого не было ни в одном снимке этой попытки, или вызов без ref — запрет
     «Take browser_snapshot first: unknown element ref.».
   - Это действует **во всех режимах**: попытка `submit` и `submit_fresh` — новая папка `runs/`,
@@ -124,7 +128,8 @@ costMicros, guardLog, runDir }`. Настройки из `.env` даёт `claude
   (тот же origin + путь, что и для сброса ref). До ввода «Apply for this job» открывает форму.
   На LinkedIn они ничего не значат: «Easy Apply» открывает диалог, «Apply» ведёт на сайт компании.
   Элементы форм (`checkbox`, `radio`, `textbox`, `combobox` и т. п.) apply-словами не проверяются:
-  флажок «I agree to the Candidate Privacy Policy» — не отправка.
+  флажок «I agree to the Candidate Privacy Policy» — не отправка. Подсказка «(Select all that apply.)»
+  в имени кнопки мультиселекта apply-словом не считается.
 - **Разрешённые хосты.** Только https и только: `*.linkedin.com`; хост `APPLY_START_URL` (точно);
   известные ATS без аккаунта (`atsDomains`: greenhouse.io, lever.co, ashbyhq.com, workable.com,
   smartrecruiters.com, teamtailor.com, personio.de, personio.com, recruitee.com, bamboohr.com,
@@ -139,7 +144,8 @@ costMicros, guardLog, runDir }`. Настройки из `.env` даёт `claude
 | `browser_click`, если в имени, роли или тексте ref **или** в словах агента есть submit-слово | запрет: «stop, report ready_to_submit» | разрешён **один раз** за попытку, второй — запрет |
 | `browser_click` с apply-словом (не элемент формы) на странице не с LinkedIn **после ввода на ней** (type, select, fill_form, upload или клик по checkbox / radio / switch / option) | запрет: «stop, report ready_to_submit» | это и есть отправка: один раз за попытку, вместе с submit-словами |
 | `browser_click` с apply-словом **до ввода** на этой странице, или на LinkedIn («Easy Apply», «Apply») | разрешён | разрешён, отправкой не считается |
-| `browser_type` / `browser_select_option` / `browser_fill_form` на элемент с submit-словом | запрет | запрет |
+| `browser_type` / `browser_select_option` / `browser_fill_form` на элемент с submit-словом (не элемент формы) | запрет | запрет |
+| клик или ввод по элементу формы (`checkbox`, `textbox`, `combobox`…) с submit-словом в подписи | разрешён | разрешён, отправкой не считается |
 | клик, ввод или выбор по ref, которого нет в снимках этой попытки (или без ref) | запрет: «Take browser_snapshot first» | запрет |
 | `browser_press_key` с Enter (и любая другая клавиша) | запрет | запрет |
 | `browser_type` с `submit: true` | запрет | запрет |

@@ -4,8 +4,9 @@
 ([guide.md](../guide.md)). Фаза 3 закрывает остаток дорожной карты: подачу откликов через
 DeepSeek, управление из Telegram и расписание. В старой дорожной карте это этапы 3, 4 и 5.
 
-Фаза 3: код всех пакетов готов и проверен вживую в режиме `fill` (2026-11-04). Осталась приёмка с
-реальной отправкой — она требует ✅ пользователя, деплоя Job-Tracker и нового токена (см. «Что осталось»). Здесь записаны все решения, результаты живой пробы и задание
+Фаза 3: код всех пакетов готов; Easy Apply проверен вживую в режиме `fill` (2026-11-04), внешние формы
+(пакет Е) — пилот 2026-11-05. Job-Tracker задеплоен, токен с `ai:applications:write` выпущен (2026-11-05).
+Осталась приёмка с реальной отправкой — она требует ✅ пользователя (см. «Что осталось»). Здесь записаны все решения, результаты живой пробы и задание
 по каждому пакету, чтобы работу можно было продолжить с чистым контекстом.
 
 ## Цель фазы
@@ -31,8 +32,8 @@ LinkedIn ─► collect ─► score (qwen) ─► Job-Tracker To Apply ─► a
 | Б | [Telegram-бот и расписание](b-telegram.md) | бот управляет сбором и оценкой: запуск вручную, cron, вкл/выкл, отчёты | А (команда `/answers`) | ✅ код и тесты; бот запущен на рабочей БД 2026-11-04, команды от пользователя ещё не проверены |
 | В | [Запуск агента и защита](c-agent-runner.md) — `plugins/claude-agent.ts` | безопасный запуск `claude -p` на DeepSeek, хук «не отправлять», блокировка браузера, учёт стоимости | — | ✅ живой `fill` 2026-11-04: Easy Apply до `ready_to_submit` (~2 ц, 75 с), Submit по реальному ref запрещён |
 | Г | [Подача — домен `src/applications`](d-applications.md) | `npm run apply`, стоп перед Submit, `--submit`, вопросы → `needs_input`, автоподача в боте | А, В, Д | ✅ код; живой `apply` 2026-11-04: внешние → skipped, Stott and May → `ready` ($0.019). Осталась приёмка: 5 подач с ✅ пользователя |
-| Д | [Эндпоинт в Job-Tracker](e-job-tracker.md) (другой репозиторий) | агент может отметить вакансию поданной | — | ✅ смержен (PR #7); ждёт деплоя JT и нового токена |
-| Е | [Подача на внешних сайтах](f-external-apply.md) | Greenhouse, Lever, Ashby и формы компаний; Workday и капча — вручную по ссылке | Г | 🔧 код и тесты готовы (2026-11-05): защита, домен, миграция `external_apply`, бот; живого пилота ещё не было |
+| Д | [Эндпоинт в Job-Tracker](e-job-tracker.md) (другой репозиторий) | агент может отметить вакансию поданной | — | ✅ смержен (PR #7), задеплоен, новый токен в `.env` (2026-11-05); живой вызов — на первой отправке |
+| Е | [Подача на внешних сайтах](f-external-apply.md) | Greenhouse, Lever, Ashby и формы компаний; Workday и капча — вручную по ссылке | Г | 🔧 код и тесты готовы, миграция `external_apply` на рабочей БД (2026-11-05); идёт живой пилот `fill` |
 
 Порядок по твоему решению: **А → Б**, потом подача (**В** и **Д** можно параллельно, **Г** — последним),
 и в конце в бот добавляется автоподача. В и Д не зависят от А и Б, их можно начать раньше
@@ -50,7 +51,8 @@ LinkedIn ─► collect ─► score (qwen) ─► Job-Tracker To Apply ─► a
 - [decisions.md](decisions.md) — **все принятые решения**, факты об окружении (сервисы, порты, пути) и
   результаты живой пробы DeepSeek 2026-11-03. Читать первым.
 - [a-answers.md](a-answers.md), [b-telegram.md](b-telegram.md), [c-agent-runner.md](c-agent-runner.md),
-  [d-applications.md](d-applications.md), [e-job-tracker.md](e-job-tracker.md) — задание по каждому пакету:
+  [d-applications.md](d-applications.md), [e-job-tracker.md](e-job-tracker.md),
+  [f-external-apply.md](f-external-apply.md) — задание по каждому пакету:
   что сделать, файлы, решения, тесты, критерий готовности.
 
 ## Как продолжить с чистым контекстом
@@ -74,14 +76,16 @@ LinkedIn ─► collect ─► score (qwen) ─► Job-Tracker To Apply ─► a
    пользователя `elijah`. Для скриншотов в Telegram нужна общая папка (правка юнита, `sudo` — делаешь сам).
 
 
-## Что осталось (2026-11-04)
+## Что осталось (2026-11-05)
 
-1. Задеплоить Job-Tracker (Actions → Deploy) и выпустить токен со scope `ai:applications:write`
-   ([e-job-tracker.md](e-job-tracker.md)); без этого отправка в LinkedIn пройдёт, а отметка в JT
-   отложится (попытка `submitted`, досылается следующим `apply`).
+1. ~~Задеплоить Job-Tracker и выпустить токен со scope `ai:applications:write`~~ — сделано 2026-11-05.
+   Deploy через Actions падает: в репозитории JT нет секретов `DEPLOY_*` — задеплоено руками
+   (`deploy/remote-deploy.sh` на сервере). Токены выпускаются CLI JT на сервере: `auth tokens create`.
 2. Добавить `illia.herasymets@gmail.com` в LinkedIn: сейчас формы подставляют старый адрес.
-3. Приёмка: 5 Easy Apply подач — ✅ в Telegram (`/pending`) или `npm run apply -- --submit <id>`.
-4. Сохранённый поиск для расписания (в боте `/search …` или `POST /api/searches`, `easyApplyOnly: true`) — без него `/run cycle`
+3. Пилот внешних форм ([f-external-apply.md](f-external-apply.md)): `fill` на Karat, Blackwall, F5, TU Dublin,
+   затем одна отправка `submit_fresh` с ✅.
+4. Приёмка: 5 подач — ✅ в Telegram (`/pending`) или `npm run apply -- --submit <id>`.
+5. Сохранённый поиск для расписания (в боте `/search …` или `POST /api/searches`) — без него `/run cycle`
    и cron собирают нечего.
-5. Поставить бота под systemd: `deploy/job-autopilot-bot.service` (сейчас запущен вручную).
-6. Резервные копии БД до миграций: `server/data/job-autopilot.backup-2026-11-04-*.db` — удалить, когда всё ок.
+6. Поставить бота под systemd: `deploy/job-autopilot-bot.service` (сейчас запущен вручную).
+7. Резервные копии БД до миграций: `server/data/job-autopilot.backup-2026-11-0*.db` — удалить, когда всё ок.

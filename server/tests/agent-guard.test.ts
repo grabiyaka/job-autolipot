@@ -163,6 +163,10 @@ describe('guardDecision on external sites', () => {
     a7: { role: 'checkbox', name: 'I agree to the Candidate Privacy Policy', text: '' }, a8: button('Attach resume'),
     a9: { role: 'generic', name: '', text: 'Apply' }, a10: button('Solicitar empleo'), a11: button('Candidater'),
     a12: { role: 'radio', name: 'Yes', text: '' }, a13: { role: 'switch', name: 'Remote', text: '' }, a14: { role: 'option', name: 'Ireland', text: '' },
+    // From the live Blackwall (Teamtailor) form, 2026-11-05.
+    a15: { role: 'checkbox', name: 'Required. By submitting this application, I agree that I have read the Privacy Policy', text: '' },
+    a16: button('Which of the following technologies have you worked with professionally? (Select all that apply.) Required'),
+    a17: { role: 'generic', name: '', text: 'Required. By submitting this application, I agree that I have read the' },
   };
   const external: GuardContext = { uploadDir, refs: externalRefs, page: formPage, startHost: null, visitedHosts: [] };
   const typedHere: GuardState = { submitClicks: 0, inputPages: [formPage] };
@@ -184,6 +188,11 @@ describe('guardDecision on external sites', () => {
     { name: 'Submit application after input', call: click('a4'), state: typedHere, fill: denyReasons.submitInFill, fresh: 'allow' },
     { name: 'privacy checkbox with "candidate" after input', call: click('a7'), state: typedHere, fill: 'allow', fresh: 'allow' },
     { name: 'Attach resume after input', call: click('a8'), state: typedHere, fill: 'allow', fresh: 'allow' },
+    { name: 'consent checkbox "By submitting this application…" after input', call: click('a15'), state: typedHere, fill: 'allow', fresh: 'allow' },
+    { name: 'agent says Submit on the consent checkbox', call: click('a15', 'Submit consent'), state: typedHere, fill: 'allow', fresh: 'allow' },
+    { name: 'consent checkbox via fill_form', call: [pw('browser_fill_form'), { fields: [{ name: 'Privacy', type: 'checkbox', target: 'a15', value: 'true' }] }], state: typedHere, fill: 'allow', fresh: 'allow' },
+    { name: 'consent label text (not a control) stays a submit', call: click('a17'), state: typedHere, fill: denyReasons.submitInFill, fresh: 'allow' },
+    { name: 'multi-select "(Select all that apply.)" after input', call: click('a16'), state: typedHere, fill: 'allow', fresh: 'allow' },
     { name: 'input on another page does not count here', call: click('a1'), state: { submitClicks: 0, inputPages: ['https://boards.greenhouse.io/acme/jobs/2'] }, fill: 'allow', fresh: 'allow' },
     { name: 'Apply after the one submit', call: click('a1'), state: { submitClicks: 1, inputPages: [formPage] }, fill: denyReasons.submitInFill, fresh: denyReasons.secondSubmit },
     { name: 'type into an unknown ref', call: [pw('browser_type'), { element: 'Email', target: 'zz', text: 'x' }], state: initialGuardState, fill: denyReasons.unknownRef, fresh: denyReasons.unknownRef },
@@ -217,6 +226,9 @@ describe('guardDecision on external sites', () => {
     expect(marks('browser_click', { element: 'Ireland', target: 'a14' })).toEqual([formPage]);
     // The agent calling a button a checkbox does not make it one.
     expect(marks('browser_click', { element: 'checkbox', target: 'a8' })).toEqual([]);
+    // The consent checkbox is input, not the one submit of submit_fresh.
+    expect(guardDecision('submit_fresh', pw('browser_click'), { element: 'Consent', target: 'a15' }, initialGuardState, external))
+      .toMatchObject({ allow: true, state: { submitClicks: 0, inputPages: [formPage] } });
     expect(marks('browser_snapshot', {})).toEqual([]);
     // A denied input marks nothing.
     expect(marks('browser_file_upload', { paths: ['/etc/passwd'] })).toEqual([]);

@@ -7,13 +7,16 @@
 Стек: Fastify 5, Prisma 7, SQLite, Vue 3 (Options API) и строгий TypeScript.
 Каркас взят из jwx-framework, его демо-домены удалены.
 
-**Состояние на 2026-11-03.** Работают этапы «Сбор» и «Отбор». `npm run collect` собирает вакансии
+**Состояние на 2026-11-05.** Работают этапы «Сбор» и «Отбор». `npm run collect` собирает вакансии
 LinkedIn через залогиненный agent Chromium (брокер, только чтение) — домен `searches`
 ([сборщик](docs/collector-plan.md)). `npm run score` оценивает их локальной qwen (Ollama) по профилю
 кандидата из [Job-Tracker](docs/trackers.md) и отправляет отобранные в его список To Apply — домены
-`scoring` и `trackers`. `npm run cycle` делает всё это одной командой. Домен [`jobs`](docs/jobs.md) хранит вакансии и их статусы. Telegram-бот и
-расписание — [docs/telegram.md](docs/telegram.md). Подача (`npm run apply`, [docs/applications.md](docs/applications.md)):
-агент заполняет форму LinkedIn Easy Apply и ждёт ✅, код и тесты готовы, ⏳ живая проверка. Страница «Вакансии» пока пустая.
+`scoring` и `trackers`. `npm run cycle` делает всё это одной командой. Домен [`jobs`](docs/jobs.md) хранит вакансии и их статусы.
+Telegram-бот `npm run bot` запускает задачи, ведёт расписание и сохранённые поиски — [docs/telegram.md](docs/telegram.md).
+Подача (`npm run apply`, `/run apply`, [docs/applications.md](docs/applications.md)): агент заполняет LinkedIn Easy Apply
+или форму на сайте компании / ATS (Greenhouse, Lever…) и ждёт ✅; Workday и сайты с аккаунтом — вручную по ссылке.
+Easy Apply проверен вживую в режиме заполнения, внешние формы — ⏳ пилот, реальных отправок ещё не было.
+Страница «Вакансии» пока пустая.
 
 **С чего начать чтение** — [docs/overview.md](docs/overview.md): как устроен весь проект, путь
 вакансии по статусам, карта кода, связь с Job-Tracker, настройка, дорожная карта и глоссарий.
@@ -26,7 +29,7 @@ LinkedIn через залогиненный agent Chromium (брокер, то�
 ## Идея
 
 ```
-systemd timer (1–2 раза в день, окно ~1 час)
+расписание в Telegram-боте (cron) или /run в боте
    │
    ▼
 1. Сбор        npm run collect: выдача LinkedIn через agent Chromium (брокер, только чтение)
@@ -39,20 +42,18 @@ systemd timer (1–2 раза в день, окно ~1 час)
                queued с оценкой → To Apply в Job-Tracker.
    │
    ▼
-3. Подача      по одной вакансии за раз:
-               claude -p на DeepSeek (--settings) + Playwright MCP
-               контекст: profile.md, answers.md (банк ответов), путь к CV, URL
-               DeepSeek сам классифицирует вакансию:
-                 • простая (все поля известны) → заполняет → submit → скриншот
-                 • сложная (неизвестные поля, тестовое, эссе) → НЕ подаёт,
-                   возвращает список вопросов
-               Выход: строгий JSON {status, questions[], screenshot, session_id}
+3. Подача      вакансии из To Apply Job-Tracker, по одной за раз:
+               claude -p на DeepSeek + Playwright MCP, хук-защита от отправки
+               контекст: профиль из JT, банк ответов, CV, URL вакансии
+                 • Easy Apply или форма без аккаунта → заполняет, стоп перед отправкой
+                 • неизвестный обязательный вопрос → вопросы, без отправки
+                 • аккаунт / капча / Workday → «подать вручную» со ссылкой
+               Выход: строгий JSON (outcome, поля формы, вопросы, стоимость)
    │
    ▼
-4. Telegram    • отчёт: «подал в X, Y; пропустил Z (почему)»
-               • вопросы по вакансии, ответ пишешь прямо в чат
-               → ответ сохраняется в банк ответов (в следующий раз вопроса не будет)
-               → подача продолжается: claude --resume <session_id>
+4. Telegram    • отчёт: заполнено, пропущено и почему, затраты
+               • форма ждёт ✅ → отправка → в JT Application APPLIED
+               • вопрос → ответ реплаем → банк ответов → форма заполняется заново
 ```
 
 ### Почему поиск не делает локальная модель
@@ -90,10 +91,10 @@ LinkedIn весит 10–50k токенов, и на таком железе м�
 | Домен `scoring` | `server/src/scoring`, `server/plugins/ollama.ts` | оценка `found` локальной моделью, решения `queued`/`rejected`/`skipped`, `npm run score` — [overview](docs/overview.md#42-отбор-) | готов; сравнение моделей на живых данных впереди |
 | Домен `trackers` | `server/src/trackers`, `server/plugins/job-tracker.ts` | профиль из Job-Tracker (кеш по ETag), отправка `queued` с оценкой в To Apply — [docs/trackers.md](docs/trackers.md) | готов |
 | `cycle` | `server/scripts/cycle.ts` | `npm run cycle`: сбор → отбор → Job-Tracker одной командой — [guide](docs/guide.md#сбор-оценка-и-отправка-одной-командой--npm-run-cycle) | готов |
-| Домены `applications`, `questions`, `answers` | `server/src/…` | попытки подачи, вопросы агента, банк ответов | план (таблицы есть) |
-| `applier` | обёртка над `claude -p` | запуск DeepSeek с MCP, разбор JSON-результата, таймауты | план |
-| `telegram` | плагин Bot API | отчёты, вопросы, приём ответов, кнопки ✅/❌ | план |
-| systemd timer | — | запуск цикла по расписанию в пределах окна | план |
+| Домены `applications`, `answers` | `server/src/…` | попытки подачи (Easy Apply и внешние формы), вопросы агента, банк ответов — [docs/applications.md](docs/applications.md) | код готов; ⏳ приёмка с реальной отправкой |
+| Запуск агента | `server/plugins/claude-agent.ts`, `server/scripts/agent-guard.ts` | DeepSeek с MCP, хук «не отправлять», разбор JSON, таймауты — [docs/agent-runner.md](docs/agent-runner.md) | готов |
+| Telegram-бот | `server/scripts/bot*.ts`, `server/plugins/telegram.ts` | `/run`, `/status`, поиски, отчёты, вопросы, кнопки ✅/❌ — [docs/telegram.md](docs/telegram.md) | готов; запущен вручную, не под systemd |
+| Расписание | домен `schedules`, бот | cron в базе вместо systemd timer | готов |
 | Клиент | `client/` | вход, регистрация, профиль; дальше вакансии, вопросы, подачи | частично |
 
 Поисковые запросы хранятся в `searches`. Профиль кандидата (CV, стек, предпочтения) ведётся в
@@ -102,21 +103,23 @@ Job-Tracker; здесь хранится только его копия (`tracke
 
 ### Статусы
 
-- **Вакансия:** `found → scored → rejected | queued → applying → applied | needs_input | failed | skipped`
+- **Вакансия:** `found → scored → rejected | queued → applying → applied | needs_input | manual | failed | skipped`
+  (`manual` — подать может только владелец; полная таблица — [docs/jobs.md](docs/jobs.md))
 - **Вопрос:** `open → answered → used`
 
 ## Защиты (с первого дня)
 
-- **Режим «стоп перед Submit»** первые 1–2 недели: DeepSeek заполняет форму и присылает
-  скриншот в Telegram, решение принимаешь ты (✅/❌). Автоподачу простых вакансий включаем,
-  когда появится доверие.
-- Лимиты: не больше N подач за запуск, не больше $X на DeepSeek в день, тайм-аут на одну
-  вакансию, весь запуск укладывается в окно (~1 час).
-- Агенту запрещено создавать аккаунты, платить, вводить пароли и проходить капчу. Такие
-  вакансии становятся «сложными» и уходят тебе в виде вопроса.
+- **Режим «стоп перед Submit»**: DeepSeek заполняет форму и присылает в Telegram заполненные поля,
+  решение принимаешь ты (✅/❌). Хук запрещает агенту клик отправки без ✅. Автоподачу простых
+  вакансий включаем, когда появится доверие.
+- Лимиты: не больше N запусков агента за прогон (`APPLY_MAX_PER_RUN`), не больше $ на DeepSeek в день
+  (`APPLY_MAX_USD_PER_DAY`), тайм-аут на вакансию и на всю задачу бота.
+- Агенту запрещено создавать аккаунты, платить, вводить пароли и проходить капчу; чужие домены
+  закрыты. Такие вакансии уходят тебе как «подать вручную» со ссылкой.
 - Браузер с постоянным профилем, в котором ты уже залогинен. Пароли агенту не передаются.
 - Playwright MCP (`:8931`) — один общий браузер, поэтому подачи идут строго по одной.
-- Каждая подача логируется: скриншот до и после, итоговый JSON, токены и стоимость.
+- Каждая попытка пишется в `applications`: итоговый JSON агента (с полями формы), причина, токены и стоимость
+  (скриншотов пока нет: папка Playwright MCP закрыта для пользователя).
 
 ## Порядок сборки
 
@@ -129,17 +132,17 @@ Job-Tracker; здесь хранится только его копия (`tracke
    склейка повторов, отправка `queued` в To Apply — [docs/overview.md](docs/overview.md#42-отбор-).
    Осталось: сравнить модели на живых данных. Критерий: из 50 живых вакансий в очередь попадают те,
    на которые ты бы подался сам.
-3. **Фаза 3** 🔧 код готов: банк ответов `npm run answers`, бот `npm run bot` ([docs/telegram.md](docs/telegram.md)), подача `npm run apply` ([docs/applications.md](docs/applications.md)), агент с защитой ([docs/agent-runner.md](docs/agent-runner.md)); осталась приёмка 5 подач с ✅ — [docs/phase3/README.md](docs/phase3/README.md). Порядок: банк ответов →
+3. **Фаза 3** 🔧 код готов: банк ответов `npm run answers`, бот `npm run bot` ([docs/telegram.md](docs/telegram.md)), подача `npm run apply` ([docs/applications.md](docs/applications.md)), агент с защитой ([docs/agent-runner.md](docs/agent-runner.md)), внешние формы (пакет Е). Осталось: пилот внешних форм и приёмка подач с ✅ — [docs/phase3/README.md](docs/phase3/README.md). Порядок: банк ответов →
    Telegram-бот (запуск сбора и оценки, расписание cron, вкл/выкл, отчёты) → подача через DeepSeek +
-   Playwright MCP (LinkedIn Easy Apply, «стоп перед Submit», ✅ в Telegram, отметка в Job-Tracker) →
+   Playwright MCP (LinkedIn Easy Apply и внешние формы, «стоп перед Submit», ✅ в Telegram, отметка в Job-Tracker) →
    автоподача. Проба DeepSeek 2026-11-03: форма заполнена за 84 с, около 2 центов.
 
 ## Открытые вопросы
 
 - Нужен ли второй источник сбора кроме LinkedIn (remote-доски с API)?
-- Откуда подача берёт вакансии: из To Apply в Job-Tracker или из `queued` здесь, и как сверять статусы.
-- Что изменить в AI API Job-Tracker для подачи (отметка о подаче, новые scopes).
 - Связка пользователей Job-Tracker ↔ autopilot: сейчас один токен в `.env` и совпадение email.
 
 Решено: профиль кандидата живёт в Job-Tracker (`GET /api/ai/profile-context`), отобранные вакансии
 записываются в его To Apply через AI API, а не через CLI — см. [docs/trackers.md](docs/trackers.md).
+Подача берёт вакансии из To Apply в Job-Tracker и отмечает поданные через
+`POST /api/ai/jobs/:id/application` (scope `ai:applications:write`) — см. [docs/applications.md](docs/applications.md).

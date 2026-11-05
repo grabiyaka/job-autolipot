@@ -85,6 +85,9 @@ export const submitWords = /submit|send|отправ|подать|подач|н�
  * Not used on LinkedIn pages, and not for form controls (a checkbox "Candidate privacy policy").
  */
 export const applyWords = /apply|bewerb|postuler|candidat|solicitar/iu;
+/** A question hint, not a button: «Which technologies… (Select all that apply.)». */
+const notApply = /all that apply/giu;
+const hasApplyWord = (text: string) => applyWords.test(text.replace(notApply, ''));
 const formControlRoles = new Set(['checkbox', 'radio', 'textbox', 'searchbox', 'combobox', 'listbox', 'option', 'switch', 'spinbutton', 'slider']);
 
 /**
@@ -195,18 +198,20 @@ const elementTools = new Set(['browser_click', 'browser_type', 'browser_select_o
 const inputTools = new Set(['browser_type', 'browser_select_option', 'browser_fill_form', 'browser_file_upload']);
 
 /**
- * Unknown ref; a ref whose real name, or the agent's own words, have a submit word; or, for a click
- * on a page outside LinkedIn that is not a form control, an apply word.
+ * Unknown ref; every ref a form control (by its real role) — never a submit, whatever its label says
+ * («By submitting this application, I agree…»); a ref whose real name, or the agent's own words, have
+ * a submit word; or, for a click on a page outside LinkedIn, an apply word.
  */
 function elementCheck(name: string, input: Record<string, unknown>, context: GuardContext): 'unknown' | 'submit' | 'apply' | 'ok' {
   const known = elementRefs(name, input).map((ref) => (typeof ref === 'string' ? context.refs[ref] : undefined));
   if (known.some((info) => info === undefined)) return 'unknown';
+  if (known.every((info) => formControlRoles.has(info!.role))) return 'ok';
   const real = known.map((info) => `${info!.role} ${info!.name} ${info!.text}`);
   const words = agentWords(name, input);
   if (real.some((text) => submitWords.test(text)) || submitWords.test(words)) return 'submit';
   const external = context.page !== null && !isLinkedinUrl(context.page);
-  if (name !== 'browser_click' || !external || known.some((info) => formControlRoles.has(info!.role))) return 'ok';
-  return real.some((text) => applyWords.test(text)) || applyWords.test(words) ? 'apply' : 'ok';
+  if (name !== 'browser_click' || !external) return 'ok';
+  return real.some(hasApplyWord) || hasApplyWord(words) ? 'apply' : 'ok';
 }
 
 /** Form controls a click changes; such a click is input too (role from the snapshot, not the agent). */

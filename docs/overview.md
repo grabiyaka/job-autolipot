@@ -113,7 +113,9 @@ LinkedIn в короткий список оценённых вакансий в
 | `found`, `scored`, `rejected` | `queued` | applier: вакансия есть в JT To Apply ([applications.md](applications.md)) |
 | `queued` | `applying` | applier (`recordApplyStatus`) |
 | `applying` | `applied`, `needs_input`, `failed` | applier: отправлено после ✅, нужен ответ, агент не справился |
-| `applying` | `queued`, `skipped` | **только applier**: прогон остановлен / форма заполняется заново; внешняя подача, закрыта, ❌ |
+| `applying` | `manual` | applier: подать может только владелец (аккаунт, капча, Workday, не https) |
+| `applying` | `queued`, `skipped` | **только applier**: прогон остановлен / форма заполняется заново; закрыта, ❌ |
+| `manual` | `applied`, `queued`, `skipped` | applier: «подал сам» / заполнить заново (`--job`) / ❌ |
 | `needs_input` | `queued`, `applying`, `skipped` | applier: на все вопросы ответили → `queued`; ❌ → `skipped` |
 | `failed` | `queued`, `skipped` | человек |
 | `skipped` | `queued` | человек |
@@ -491,8 +493,8 @@ JT — отдельное приложение (свой репозиторий,
 
 - **Связка пользователей JT ↔ autopilot.** Сейчас один токен в `.env` и совпадение email — это
   один пользователь. Для нескольких пользователей нужен токен на пользователя.
-- **systemd.** Таймер для `npm run cycle`, окно запуска и блокировка общей вкладки браузера от
-  Telegram-бота на время прогона.
+- **Общий браузер с local-agent.** Расписание теперь в боте (cron в базе, вместо systemd timer);
+  открыта блокировка общей вкладки agent Chromium от Telegram-бота local-agent на время прогона.
 - Нужен ли второй источник сбора кроме LinkedIn.
 
 ## 9. Глоссарий
