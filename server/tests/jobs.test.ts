@@ -22,6 +22,10 @@ describe('Job status transitions', () => {
   it('rejects skipped stages and any change after applied', () => {
     expect(() => requireTransition('found', 'applied')).toThrow(expect.objectContaining({ statusCode: 409 }));
     expect(() => requireTransition('applying', 'queued')).toThrow(expect.objectContaining({ statusCode: 409 }));
+    // Only the applier may put an attempt back to the queue or skip it.
+    expect(() => requireTransition('applying', 'queued', true)).not.toThrow();
+    expect(() => requireTransition('applying', 'skipped', true)).not.toThrow();
+    expect(() => requireTransition('applying', 'rejected', true)).toThrow(expect.objectContaining({ statusCode: 409 }));
     for (const status of jobStatuses) {
       expect(() => requireTransition('applied', status)).toThrow(expect.objectContaining({ code: 'INVALID_JOB_STATUS' }));
     }

@@ -24,7 +24,7 @@ function toRun(record: SearchRunRecord): SearchRun {
 
 type SearchData = Readonly<{
   source: string; keywords: string; location: string | null;
-  includeTitle: readonly string[]; excludeTitle: readonly string[]; enabled: boolean;
+  includeTitle: readonly string[]; excludeTitle: readonly string[]; easyApplyOnly: boolean; enabled: boolean;
 }>;
 
 /** Owner-facing queries are scoped to the owner, so another user's search behaves as missing. */
@@ -53,7 +53,8 @@ export class SearchRepository {
   async create(ownerId: string, data: SearchData): Promise<Search> {
     return toSearch(await this.prisma.search.create({
       data: {
-        userId: ownerId, source: data.source, keywords: data.keywords, location: data.location, enabled: data.enabled,
+        userId: ownerId, source: data.source, keywords: data.keywords, location: data.location,
+        easyApplyOnly: data.easyApplyOnly, enabled: data.enabled,
         includeTitle: termsColumn(data.includeTitle), excludeTitle: termsColumn(data.excludeTitle),
       },
     }));

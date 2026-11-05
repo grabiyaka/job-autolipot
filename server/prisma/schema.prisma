@@ -27,6 +27,8 @@ model User {
   jobs           Job[]
   searches       Search[]
   answers        Answer[]
+  schedules      Schedule[]
+  taskRuns       TaskRun[]
   trackerProfile TrackerProfile?
 
   @@map("users")
@@ -116,21 +118,23 @@ model TrackerProfile {
 
 /// Сохранённый поиск пользователя на одном источнике. Сборщик прогоняет все включённые поиски.
 model Search {
-  id           String      @id @default(uuid())
-  userId       String
+  id            String      @id @default(uuid())
+  userId        String
   /// Код модуля-источника из реестра `src/searches/SearchSources.ts`.
-  source       String
-  keywords     String
-  location     String?
+  source        String
+  keywords      String
+  location      String?
   /// JSON-массив слов: в названии вакансии должно быть хотя бы одно (пусто — без ограничения).
-  includeTitle String?
+  includeTitle  String?
   /// JSON-массив слов: вакансия с любым из них в названии отсеивается до открытия её страницы.
-  excludeTitle String?
-  enabled      Boolean     @default(true)
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
-  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  runs         SearchRun[]
+  excludeTitle  String?
+  /// Только вакансии с LinkedIn Easy Apply (фильтр `f_AL=true` в адресе выдачи).
+  easyApplyOnly Boolean     @default(false)
+  enabled       Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runs          SearchRun[]
 
   @@index([userId])
   @@map("searches")
@@ -169,8 +173,12 @@ model SearchRun {
   @@map("search_runs")
 }
 
+/// running → ready (ждёт ✅) → submitted (отправлено, JT ещё не отмечен) → applied;
+/// running → needs_input | failed | skipped; ready → skipped (❌) | failed.
 enum ApplicationStatus {
   running
+  ready
+  submitted
   applied
   needs_input
   failed
@@ -188,7 +196,11 @@ model Application {
   screenshotAfter  String?
   /// Итоговый JSON агента.
   result           String?
+  /// Понятная причина итога (внешняя подача, отказ, ответ Job-Tracker…).
+  note             String?
   inputTokens      Int               @default(0)
+  /// Входные токены из кеша DeepSeek (дешевле обычных).
+  cacheReadTokens  Int               @default(0)
   outputTokens     Int               @default(0)
   /// Стоимость в микродолларах (1e-6 USD), чтобы не хранить float.
   costMicros       Int               @default(0)
@@ -223,6 +235,7 @@ model Question {
 
   @@index([applicationId])
   @@index([status])
+  @@index([telegramMessageId])
   @@map("questions")
 }
 
@@ -246,4 +259,71 @@ model Answer {
 
   @@unique([userId, key])
   @@map("answers")
+}
+
+// ───────────── Расписание и запуски задач (Telegram-бот) ─────────────
+
+/// Задача конвейера, которую можно запустить из бота или по расписанию.
+enum PipelineTask {
+  collect
+  score
+  cycle
+  apply
+}
+
+enum TaskTrigger {
+  manual
+  schedule
+}
+
+/// running → ok | error | aborted; busy — запуск не начался: занято другой задачей или браузер занят.
+enum TaskRunStatus {
+  running
+  ok
+  error
+  aborted
+  busy
+}
+
+/// Расписание задачи пользователя: одно на задачу. Новое создаётся выключенным.
+model Schedule {
+  id          String         @id @default(uuid())
+  userId      String
+  task        PipelineTask
+  /// Выражение cron из 5 полей, например `0 9,18 * * *`.
+  cron        String
+  /// Часовой пояс IANA, в котором читается cron.
+  timezone    String         @default("Europe/Dublin")
+  enabled     Boolean        @default(false)
+  /// JSON флагов задачи: limit, threshold, maxMinutes, easyApply, skipCollect.
+  options     String?
+  lastRunAt   DateTime?
+  lastStatus  TaskRunStatus?
+  lastSummary String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runs        TaskRun[]
+
+  @@unique([userId, task])
+  @@map("schedules")
+}
+
+/// Один ручной или плановый запуск задачи и его итог.
+model TaskRun {
+  id         String        @id @default(uuid())
+  userId     String
+  task       PipelineTask
+  trigger    TaskTrigger
+  scheduleId String?
+  startedAt  DateTime
+  finishedAt DateTime?
+  status     TaskRunStatus
+  summary    String?
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  schedule   Schedule?     @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+
+  @@index([userId, startedAt])
+  @@index([status])
+  @@map("task_runs")
 }

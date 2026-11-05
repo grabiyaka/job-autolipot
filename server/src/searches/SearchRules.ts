@@ -6,10 +6,12 @@ export type SearchStopReason = typeof searchStopReasons[number];
 
 export type SearchFields = Readonly<{
   source: string; keywords: string; location: string | null; includeTitle: string[]; excludeTitle: string[];
+  easyApplyOnly: boolean;
 }>;
 export type SearchFieldsInput = Readonly<{
   source: string; keywords: string; location?: string | null;
   includeTitle?: readonly string[] | null; excludeTitle?: readonly string[] | null;
+  easyApplyOnly?: boolean;
 }>;
 
 const maxTerms = 50;
@@ -71,11 +73,16 @@ export function searchFields(input: SearchFieldsInput, sources: readonly JobSour
   return {
     source, keywords, location: input.location?.trim() || null,
     includeTitle: titleTerms(input.includeTitle), excludeTitle: titleTerms(input.excludeTitle),
+    easyApplyOnly: input.easyApplyOnly ?? false,
   };
 }
 
-export function searchQuery(fields: Pick<SearchFields, 'keywords' | 'location'>): SearchQuery {
-  return { keywords: fields.keywords, ...(fields.location ? { location: fields.location } : {}) };
+export function searchQuery(fields: Pick<SearchFields, 'keywords' | 'location' | 'easyApplyOnly'>): SearchQuery {
+  return {
+    keywords: fields.keywords,
+    ...(fields.location ? { location: fields.location } : {}),
+    ...(fields.easyApplyOnly ? { easyApplyOnly: true } : {}),
+  };
 }
 
 export type PageCards = Readonly<{ cards: JobCard[]; invalid: number }>;

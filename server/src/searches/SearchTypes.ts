@@ -7,6 +7,8 @@
 export type SearchQuery = Readonly<{
   keywords: string;
   location?: string;
+  /** Only jobs that can be applied to on the site itself (LinkedIn Easy Apply); a source without such a filter ignores it. */
+  easyApplyOnly?: boolean;
 }>;
 
 /** A job as seen in search results. Field names match `JobInput` of the jobs domain. */

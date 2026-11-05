@@ -6,7 +6,10 @@
 в [trackers.md](trackers.md), запуск и проверки для разработки — в [development.md](development.md).
 
 Состояние на 2026-11-03: **работают «Сбор» (LinkedIn) и «Отбор»** (оценка локальной qwen по профилю
-из Job-Tracker и отправка отобранных в его To Apply). Подачи и Telegram ещё нет.
+из Job-Tracker и отправка отобранных в его To Apply). С 2026-11-04 есть Telegram-бот job-autopilot:
+сбор и оценка вручную и по расписанию ([ниже](#telegram-бот-и-расписание--npm-run-bot)). Есть код подачи
+(`npm run apply`, [ниже](#подача--npm-run-apply)): агент заполняет форму Easy Apply и ждёт твоего ✅;
+живой проверки на реальных вакансиях ещё не было.
 
 ## 1. Общая схема
 
@@ -37,7 +40,7 @@ found ──▶ scored ──▶ queued ──▶ applying ──▶ applied
 ## 2. Как устроен сбор
 
 Браузер свой не запускается. Сборщик ходит через **agent Chromium** на этом сервере — тот же,
-что использует Telegram-бот. Это обычный Chromium с постоянным профилем, в котором ты вошёл
+что использует Telegram-бот local-agent. Это обычный Chromium с постоянным профилем, в котором ты вошёл
 в LinkedIn. Доступ к нему — через **брокер** (Unix-сокет `/run/agent-browser/broker.sock`),
 который умеет только читать страницы: открыть URL, прочитать текст и ссылки, прокрутить.
 Кликать, вводить и отправлять формы он не может.
@@ -229,6 +232,7 @@ linkedin «node.js» (Remote)
 | `--location` | `Remote` — только удалённые; иначе город или страна (`"Dublin, Ireland"`) |
 | `--include` | через запятую; в названии должно быть хотя бы одно слово. Пусто — любое |
 | `--exclude` | через запятую; любое слово отсеивает. Сильнее `--include` |
+| `--easy-apply` | только вакансии с кнопкой LinkedIn Easy Apply (`f_AL=true`); с сохранёнными поисками — на этот прогон |
 | `--dry-run` | только печать, без записи |
 | `--max-minutes` | предел времени (по умолчанию 60). Ctrl+C тоже останавливает, дописав страницу |
 
@@ -370,6 +374,127 @@ npm run cycle -- --user illia.herasymets@gmail.com --skip-collect   # тольк
 | пользователь не привязан к JT | он пропущен (с `--user` — код выхода 1) |
 | Ctrl+C или истёк `--max-minutes` во время отбора | текущая вакансия дописывается, в JT не отправляется |
 
+### Банк ответов — `npm run answers`
+
+Типовые ответы на вопросы форм откликов: агент подачи (фаза 3) берёт их отсюда, а не угадывает.
+Ответ может быть и **правилом** (как считать зарплату, что нельзя подтверждать): агент получает
+весь банк списком «вопрос → ответ» и выполняет его как инструкции. Веб-страницы для банка нет,
+CLI, HTTP API и Telegram-бот (`/answers`, `/answer <вопрос> = <ответ>`, `origin: telegram`).
+
+```bash
+npm run answers -- --user illia.herasymets@gmail.com list
+npm run answers -- --user illia.herasymets@gmail.com set "<вопрос>" "<ответ>"
+npm run answers -- --user illia.herasymets@gmail.com delete <id>    # id из list
+```
+
+Вопрос сравнивается по ключу, а не по тексту: регистр, `*`, пунктуация, служебные слова
+(`please`, `how many`, `working with`, `do you have`, `of`, `the`…) и порядок слов не важны.
+«Years of experience working with TypeScript*» и «How many years of TypeScript experience?» — один
+вопрос, второй `set` заменит ответ первого. Отрицания (`not`, `no`, `never`, `without`) и числа
+значимы: «Are you authorized…» и «Are you not authorized…» — разные вопросы.
+
+Начальные ответы (заводятся один раз, этими командами):
+
+```bash
+U="--user illia.herasymets@gmail.com"
+npm run answers -- $U set "Years of experience with TypeScript" "1"
+npm run answers -- $U set "Email address" "illia.herasymets@gmail.com"
+npm run answers -- $U set "Resume / CV" "upload the resume file at the exact path given in the instructions (a copy of /srv/agent-files)"
+npm run answers -- $U set "Consent to data processing / privacy policy for this application" "Yes"
+npm run answers -- $U set "Other legal declarations, account creation, passwords, payment, captcha" "never — stop with blocked"
+npm run answers -- $U set "Cover letter / message to recruiter (optional)" "leave empty"
+npm run answers -- $U set "Expected salary / rate" "Expected salary: base the number on the posting. \
+If the posting gives a range, answer inside it, never below the profile minimum (40 000 EUR/year). \
+If it gives no range, answer the profile target (48 000 EUR/year). Convert units when the field asks \
+for them: month = year / 12, hour = year / 2080. If the field allows text, give a range and say it is \
+open to discussion. If the posting's range is entirely below the minimum, do not answer: stop with needs_input."
+npm run answers -- $U list
+```
+
+Годы по остальным технологиям не заведены: агент спросит их при первой встрече, ответ попадёт в банк.
+Зарплатное правило — из [phase3/a-answers.md](phase3/a-answers.md#правило-по-зарплате); минимум и цель
+там для наглядности, агент сверяет их с профилем JT.
+
+HTTP API (нужен вход, видны только свои ответы): `GET /api/answers`, `PUT /api/answers`
+с `{question, answer}` (запись по ключу, `origin: manual`), `DELETE /api/answers/:id` (чужой или
+несуществующий — 404). Схемы — в Swagger `/docs`.
+
+### Telegram-бот и расписание — `npm run bot`
+
+Бот — пульт конвейера: запустить сбор или оценку сейчас, завести расписание, включить его и
+выключить, получить отчёт. Отвечает только чату `TELEGRAM_CHAT_ID`, другим молчит. Работает от имени
+`BOT_USER` (email), а если тот не задан — единственного активного пользователя. Подробно —
+[telegram.md](telegram.md).
+
+```bash
+npm run bot          # в терминале; Ctrl+C останавливает текущую задачу и бота
+```
+
+Под systemd — пример юнита [deploy/job-autopilot-bot.service](../deploy/job-autopilot-bot.service)
+(ставится вручную, команды в комментарии файла).
+
+| Команда | Что делает |
+|---|---|
+| `/status` | вакансии по статусам, что идёт сейчас, последние 5 запусков, ближайшие по расписанию |
+| `/run collect` · `/run score` · `/run cycle` | запустить сейчас; в конце — отчёт и лучшие `queued` со ссылками |
+| `/stop` | остановить задачу: текущая страница или вакансия дописывается |
+| `/schedule` | расписания с кнопками вкл/выкл и «удалить» |
+| `/schedule cycle 0 9,18 * * *` | создать (выключенным) или заменить расписание задачи |
+| `/on cycle` · `/off cycle` | включить или выключить расписание |
+| `/searches` | сохранённые поиски с кнопками вкл/выкл |
+| `/queued` | 10 лучших отобранных: оценка, название, компания, ссылка |
+| `/answers` · `/answer <вопрос> = <ответ>` | банк ответов: посмотреть, добавить |
+| `/run apply` · `/pending` | заполнить формы из To Apply (стоп перед Submit), формы с ✅ / ❌ и вопросы агента ([подача](#подача--npm-run-apply)) |
+
+Флаги к `/run` и `/schedule` пишутся после команды как `ключ=значение`: `limit=N` и `threshold=N`
+(score, cycle), `max=минуты` (предел прогона, по умолчанию 60), `easy` (только Easy Apply; collect,
+cycle), `skip-collect` (cycle). `dry-run` и `no-push` в боте нет. Пример: `/schedule cycle 0 9,18 * * * limit=40`.
+
+- Cron читается в `Europe/Dublin` (`SCHEDULE_TIMEZONE`), переход на зимнее и летнее время учитывается.
+  Если бот был выключен в момент запуска, пропущенный запуск не догоняется, следующий будет по расписанию.
+- Одна задача за раз. Пока она идёт, другие запуски (и по расписанию) отвечают «занято: cycle,
+  запущено N мин назад» и пишутся в историю как `busy`. Занятый браузер (`npm run collect` в терминале)
+  бот тоже видит: `/run collect` отвечает «занято: браузер — …», `cycle` пропускает сбор и делает отбор.
+- После `/run` отчёт приходит всегда. После планового запуска — только при новых `queued` или ошибках,
+  а «занято» и ошибки — всегда (`BOT_SCHEDULED_REPORT=always` — после каждого).
+
+### Подача — `npm run apply`
+
+Агент заполняет форму LinkedIn Easy Apply и **останавливается перед Submit**; отправляешь ты, после
+проверки. Вакансии берутся из **Job-Tracker To Apply** (что лишнее — убери там вручную), по одной, старые
+первыми; не-LinkedIn вакансии пропускаются как «внешняя подача». Подробно — [applications.md](applications.md).
+
+Перед первым запуском:
+
+1. В `.env`: `JOB_TRACKER_URL`/`JOB_TRACKER_TOKEN` (токену нужен scope `ai:applications:write`), цены
+   `DEEPSEEK_PRICE_*`, `APPLY_CV_FILE` — имя файла резюме в `/srv/agent-files` (пусто — единственный PDF там).
+   Лимиты: `APPLY_MAX_PER_RUN=5`, `APPLY_MAX_USD_PER_DAY=0.5`.
+2. Миграция базы: `npm run db:migrate`.
+3. В LinkedIn должен быть вход в agent Chromium, а нужный email — среди адресов аккаунта
+   (иначе агент оставит предзаполненный и скажет об этом).
+4. Банк ответов заполнен ([выше](#банк-ответов--npm-run-answers)).
+
+```bash
+npm run apply -- --user <email> --limit 1          # заполнить одну, смотреть в noVNC http://127.0.0.1:6080
+npm run apply -- --user <email> --job <id>         # конкретную вакансию (id здесь или в Job-Tracker)
+npm run apply -- --user <email> --list             # что ждёт ✅ (с заполненными полями) и открытые вопросы
+npm run apply -- --user <email> --submit <applicationId>   # отправить; в JT вакансия станет APPLIED
+npm run apply -- --user <email> --reject <applicationId>   # отказаться
+npm run apply -- --user <email> --answer <questionId> "<ответ>"   # ответ → банк, вакансия снова в очереди
+```
+
+Что бывает с вакансией после заполнения:
+
+- **ждёт ✅** — проверь поля (в `--list` или в noVNC) и отправь `--submit` или кнопкой ✅ в боте;
+- **нужен ответ** — агент не нашёл ответа на обязательный вопрос: ответь `--answer` или реплаем в боте,
+  следующий прогон заполнит форму заново уже с этим ответом;
+- **skipped** — внешняя подача, вакансия закрыта или не проходит вопрос-фильтр (причина в `why`);
+- **failed** — агент не справился; повторить: `--job <id>`.
+
+Если Job-Tracker не ответил при отправке, вакансия всё равно `applied`, а отметка в JT уйдёт при
+следующем `npm run apply`. В боте то же: `/run apply limit=3`, затем ✅ / ❌ на каждую форму; расписание
+только заполняет (`/schedule apply 0 10 * * 1-5`), отправка — всегда твоим ✅.
+
 ### Где смотреть результат
 
 Веб-страницы вакансий пока нет. Варианты:
@@ -408,7 +533,7 @@ npm run cycle -- --user illia.herasymets@gmail.com --skip-collect   # тольк
 | `BrowserUnavailableError: browser broker is not running` | не запущен agent Chromium/брокер: `systemctl status agent-browser-broker agent-chromium` |
 | `LinkedIn требует вход или проверку (/login …)` | сессия LinkedIn истекла или капча: войди через noVNC, повтори |
 | `BrowserBlockedError: blocked by browser policy` | URL не в allow-list брокера (сейчас разрешены только `linkedin.com` и `example.com`) |
-| `page changed while reading …` | вкладку увёл кто-то другой (Telegram-бот, local-agent) — не пользуйся ими во время сбора |
+| `page changed while reading …` | вкладку увёл кто-то другой (Telegram-бот local-agent) — не давай ему задач с браузером во время сбора |
 | `карточек 7` вместо 25 на странице | LinkedIn не догрузил выдачу за 8 шагов прокрутки; недобранное попадёт в следующий прогон |
 | `LinkedIn открыл AI-поиск (/jobs/search-results) вместо обычной выдачи` | LinkedIn проигнорировал `skipRedirect=true` и увёл аккаунт на новый AI-поиск, где нет ссылок на вакансии. Поиски LinkedIn в этом прогоне остановлены. Открой выдачу в agent Chromium через noVNC и проверь, что это `/jobs/search/`; если LinkedIn поменял поведение, нужна правка `LinkedinParser.ts` (`searchUrl`) |
 | в описании мусор или пустая компания | LinkedIn поменял вёрстку или интерфейс не английский — сохрани страницу как фикстуру и поправь `LinkedinParser.ts` |
@@ -423,8 +548,9 @@ npm run cycle -- --user illia.herasymets@gmail.com --skip-collect   # тольк
 | `Job-Tracker: ошибка — Job-Tracker: превышен лимит запросов…` (429) | лимит JT 60 запросов в минуту; созданное не потеряется, остаток и оценки дошлются следующим прогоном через минуту |
 | `Job-Tracker: … осталось N` | в одну пачку уходит до 50 вакансий; запусти `npm run score` ещё раз |
 
-Важно: вкладка agent Chromium **одна** и общая с Telegram-ботом и local-agent. Пока идёт сбор,
-не давай им задания с браузером.
+Важно: вкладка agent Chromium **одна** и общая с Telegram-ботом local-agent. Пока идёт сбор
+(вручную или по расписанию бота job-autopilot), не давай ему задания с браузером: lock job-autopilot
+защищает только от своих же задач.
 
 ## 6. Дорожная карта
 
@@ -460,27 +586,32 @@ npm run cycle -- --user illia.herasymets@gmail.com --skip-collect   # тольк
 Этапы 3–5 перепланированы в **фазу 3** с новым порядком (банк ответов → Telegram-бот с расписанием → подача):
 [phase3/README.md](phase3/README.md). Чек-листы ниже — исходный вариант.
 
-### Этап 3. Подача по одной вакансии — ⏳
+### Этап 3. Подача по одной вакансии — ✅ код, ⏳ живая проверка
 
-- [ ] `npm run apply -- <jobId>`: DeepSeek (`claude -p` с настройками DeepSeek) + Playwright MCP
-- [ ] Контекст: профиль, банк ответов, путь к CV (из `/srv/agent-files` — только оттуда MCP загружает файлы)
-- [ ] **Стоп перед Submit**: агент заполняет, делает скриншот, не отправляет
-- [ ] Сложное (неизвестные поля, эссе, тест) → вопросы, статус `needs_input`
-- [ ] Никогда сам: согласия и юридические заявления, создание аккаунтов, пароли, оплата, капча
-- [ ] Таблица `applications`: попытка, скриншоты, итог, токены и стоимость
-- Готово, когда: 5 реальных вакансий заполнены правильно
+- [x] `npm run apply -- --user <email> [--job <id>]`: DeepSeek (`claude -p`) + Playwright MCP, вакансии из JT To Apply
+- [x] Контекст: профиль JT, банк ответов, копия CV из `/srv/agent-files` (`APPLY_CV_FILE`)
+- [x] **Стоп перед Submit**; отправка `--submit` после проверки, отметка APPLIED в Job-Tracker
+- [x] Сложное (неизвестные поля) → вопросы, статус `needs_input`; ответ → банк → новая попытка
+- [x] Никогда сам: юридические заявления (кроме разрешённого банком согласия), аккаунты, пароли, оплата, капча
+- [x] Таблица `applications`: попытка, итог, токены и стоимость (скриншоты — нет)
+- [ ] Готово, когда: 5 реальных вакансий заполнены правильно
 
-### Этап 4. Telegram и банк ответов — ⏳
+### Этап 4. Telegram и банк ответов — ✅ бот и вопросы агента, ⏳ живая проверка
 
-- [ ] Отчёт после прогона: подано, пропущено и почему
-- [ ] Вопросы агента в чат, твой ответ → банк ответов → подача продолжается (`--resume`)
-- [ ] Кнопки ✅/❌ для подтверждения отправки
+- [x] Бот `npm run bot`: `/run collect|score|cycle`, `/stop`, `/status`, `/searches`, `/queued`, отчёт после запуска
+- [x] Банк ответов: CLI, HTTP, `/answers` и `/answer` в боте
+- [x] Отчёт после подачи: заполнено, пропущено и почему, затраты
+- [x] Вопросы агента в чат, ответ реплаем → банк ответов → вакансия снова в очереди (форма заполняется заново)
+- [x] Кнопки ✅/❌ для подтверждения отправки
 
-### Этап 5. Расписание и автоподача — ⏳
+### Этап 5. Расписание и автоподача — ✅ расписание сбора, отбора и заполнения, ⏳ автоподача
 
-- [ ] systemd timer 1–2 раза в день: сбор → отбор → подача → отчёт, окно ~1 час
-- [ ] Блокировка общей вкладки браузера от Telegram-бота на время прогона
-- [ ] Лимиты: подач за запуск, $ DeepSeek в день, тайм-аут на вакансию
+- [x] Расписание в боте (cron, `Europe/Dublin`, вкл/выкл; вместо systemd timer): `collect`, `score`, `cycle`
+- [x] История запусков `task_runs`, отчёт только при новых `queued` или ошибках
+- [x] Блокировка браузера, общая для CLI и бота job-autopilot
+- [x] Расписание для `apply` (только заполнение; отправка — ✅)
+- [ ] Блокировка общей вкладки браузера от Telegram-бота local-agent на время прогона (правка в local-agent)
+- [x] Лимиты: подач за запуск, $ DeepSeek в день, тайм-аут на вакансию
 - [ ] Автоподача «простых» вакансий без подтверждения — когда появится доверие
 
 ### Этап 6. Веб-интерфейс — по желанию

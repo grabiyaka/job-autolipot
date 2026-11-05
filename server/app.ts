@@ -11,6 +11,7 @@ import { registerClient } from './plugins/client.js';
 import { registerDomainRoutes } from './framework/composition/register-domain-routes.js';
 import { registerSystemRoutes } from './plugins/system-routes.js';
 import type { JobTrackerClient } from './src/trackers/TrackerTypes.js';
+import type { HttpApplySettings } from './framework/composition/create-application.js';
 
 export type ApplicationOptions = {
   databaseUrl: string;
@@ -18,6 +19,8 @@ export type ApplicationOptions = {
   logger?: boolean;
   /** Job-Tracker AI API client; without it the tracker domain answers "not configured". */
   tracker?: JobTrackerClient | null;
+  /** The browser agent for POST /api/applications/:id/submit; without it submit answers 503. */
+  apply?: HttpApplySettings;
 };
 
 export async function buildServer(options: ApplicationOptions) {
@@ -59,7 +62,7 @@ export async function buildServer(options: ApplicationOptions) {
     });
 
     const infrastructure = await registerInfrastructure(server, options.databaseUrl);
-    const application = createApplication(infrastructure.prisma, infrastructure.clock, infrastructure.identifiers, authentication.sessionTtlSeconds, options.tracker ?? null);
+    const application = createApplication(infrastructure.prisma, infrastructure.clock, infrastructure.identifiers, authentication.sessionTtlSeconds, options.tracker ?? null, options.apply);
     await registerAuthentication(server, application.users, authentication);
     registerDomainRoutes(server, application, { name: SESSION_COOKIE, secure: authentication.cookieSecure });
     registerSystemRoutes(server, infrastructure.checkDatabase);

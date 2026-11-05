@@ -12,7 +12,7 @@
    - `answerKey(question)` — нормализация: NFKC, нижний регистр, убрать `*`, пунктуацию и «шум»
      (`please`, `how many`, `working with`, `do you have`…), схлопнуть пробелы. Так
      «Years of experience working with TypeScript*» и «How many years of TypeScript experience?»
-     дают один ключ (`years experience typescript`). Правила нормализации — таблицей в тестах.
+     дают один ключ (`experience typescript years`). Правила нормализации — таблицей в тестах.
    - Ответы-**правила** (не одно значение) хранятся тем же текстом: агент получает их как инструкции
      (зарплата, согласия). Отличать их не нужно — всё уходит агенту списком «вопрос → ответ».
 3. HTTP (`authenticatedAccess`, фильтр по владельцу): `GET /api/answers`, `PUT /api/answers`

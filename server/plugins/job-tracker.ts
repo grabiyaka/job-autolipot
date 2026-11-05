@@ -1,7 +1,7 @@
 import { createHttpRequest, HttpError, pause } from './http.js';
 import { TrackerError } from '../src/trackers/TrackerTypes.js';
 import type {
-  JobTrackerClient, TrackerEvaluationInput, TrackerJobInput, TrackerJobPage, TrackerProfileContext, TrackerPushResult, TrackerUser,
+  JobTrackerClient, TrackerApplicationInput, TrackerEvaluationInput, TrackerMarkResult, TrackerToApplyPage, TrackerJobInput, TrackerJobPage, TrackerProfileContext, TrackerPushResult, TrackerUser,
   TrackerWorklistQuery,
 } from '../src/trackers/TrackerTypes.js';
 
@@ -96,6 +96,32 @@ export function createJobTrackerClient(config: JobTrackerConfig): JobTrackerClie
     async recordEvaluation(trackerJobId: string, evaluation: TrackerEvaluationInput) {
       const response = await call('PATCH', `/api/ai/jobs/${encodeURIComponent(trackerJobId)}/evaluation`, { body: evaluation });
       await response.body?.cancel();
+    },
+
+    async listToApply(cursor?: string | null): Promise<TrackerToApplyPage> {
+      const search = new URLSearchParams({ evaluation: 'any', limit: '100' });
+      if (cursor) search.set('cursor', cursor);
+      type Row = { id: string; jobTitle?: string; companyName?: string; vacancyUrl?: string; source?: string | null };
+      const body = await (await call('GET', `/api/ai/jobs?${search}`)).json() as { items: Row[]; nextCursor: string | null };
+      return {
+        items: body.items.map((row) => ({
+          id: row.id, title: row.jobTitle ?? '', company: row.companyName ?? '', url: row.vacancyUrl ?? '', source: row.source ?? null,
+        })),
+        nextCursor: body.nextCursor ?? null,
+      };
+    },
+
+    async markApplied(trackerJobId: string, input: TrackerApplicationInput): Promise<TrackerMarkResult> {
+      let response: Response;
+      try {
+        response = await call('POST', `/api/ai/jobs/${encodeURIComponent(trackerJobId)}/application`, { body: input });
+      } catch (error) {
+        if (error instanceof TrackerError && error.status === 404) return { status: 'not_found' };
+        if (error instanceof TrackerError && error.status === 409) return { status: 'conflict', message: error.message };
+        throw error;
+      }
+      const body = await response.json() as { created?: boolean; applicationId?: string };
+      return { status: body.created ? 'created' : 'already_applied', applicationId: String(body.applicationId ?? '') };
     },
   };
 }

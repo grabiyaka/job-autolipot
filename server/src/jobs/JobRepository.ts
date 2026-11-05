@@ -114,6 +114,11 @@ export class JobRepository {
     return record ? toJob(record) : null;
   }
 
+  async findByUrl(ownerId: string, url: string): Promise<Job | null> {
+    const record = await this.prisma.job.findFirst({ where: { userId: ownerId, url } });
+    return record ? toJob(record) : null;
+  }
+
   async delete(ownerId: string, id: string): Promise<boolean> {
     const { count } = await this.prisma.job.deleteMany({ where: { id, userId: ownerId } });
     return count > 0;

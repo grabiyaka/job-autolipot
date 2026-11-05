@@ -75,6 +75,10 @@ class FakeTracker implements JobTrackerClient {
     if (this.evaluations.length >= this.evaluationBudget) throw new TrackerError('rate_limited', 'Job-Tracker: превышен лимит запросов.', 429);
     this.evaluations.push({ trackerJobId, evaluation });
   }
+
+  // Applying is tested in applications.test.ts.
+  async listToApply() { return { items: [], nextCursor: null }; }
+  async markApplied() { return { status: 'not_found' as const }; }
 }
 
 describe('Trackers: Job-Tracker link, profile cache and push on SQLite', () => {

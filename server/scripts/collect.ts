@@ -2,24 +2,28 @@ import '../plugins/environment.js';
 import { parseArgs } from 'node:util';
 import { createCollector } from '../framework/composition/create-collector.js';
 import { defaultBrokerSocket } from '../plugins/browser-broker.js';
+import { acquireBrowserLock } from '../plugins/browser-lock.js';
 import { searchSources } from '../src/searches/SearchSources.js';
 import type { Logger } from '../src/searches/SearchTypes.js';
-import { adHocSearch, collectOptions, maxMinutes, searchReportLines } from './pipeline-cli.js';
+import { adHocSearch, collectOptions, maxMinutes } from './pipeline-cli.js';
+import { collectJobs, consoleOutput } from './pipeline-tasks.js';
 
 const usage = `Сбор вакансий.
 
 Разовый поиск (ничего не сохраняет о самом поиске; вакансии пишутся в jobs, с --dry-run только печатаются):
   npm run collect -- --user me@example.com --source linkedin --query "node.js" [--location Remote]
-                     [--include "node,typescript"] [--exclude "java,android,qa"] [--dry-run] [--max-minutes 60]
+                     [--include "node,typescript"] [--exclude "java,android,qa"] [--easy-apply] [--dry-run] [--max-minutes 60]
 
 Сохранённые поиски (POST /api/searches; отчёт каждого — в search_runs):
-  npm run collect -- [--user me@example.com] [--dry-run] [--max-minutes 60]
+  npm run collect -- [--user me@example.com] [--easy-apply] [--dry-run] [--max-minutes 60]
 
   --location   "Remote" — фильтр удалённой работы, иначе город или страна
   --include    слова через запятую: в названии вакансии должно быть хотя бы одно
   --exclude    слова через запятую: вакансия с любым из них в названии отсеивается
                до открытия её страницы и сохраняется как rejected (с причиной в why)
                Слова ищутся целиком без учёта регистра: "java" не задевает "JavaScript".
+  --easy-apply только вакансии с LinkedIn Easy Apply (f_AL=true). Для сохранённых поисков —
+               только на этот прогон; постоянно — поле easyApplyOnly в /api/searches
   --dry-run    печатает найденное (+ принята, − отсеяна) и ничего не записывает
   --max-minutes  предел длительности; Ctrl+C тоже останавливает, дописав текущую страницу
 
@@ -43,7 +47,10 @@ async function main(): Promise<void> {
   process.once('SIGINT', () => { log.warn('Остановка по Ctrl+C: дописываю текущую страницу…'); interrupt.abort(); });
   const signal = AbortSignal.any([interrupt.signal, AbortSignal.timeout(minutes * 60_000)]);
   const dryRun = values['dry-run'] ?? false;
+  const easyApplyOnly = values['easy-apply'] ?? false;
 
+  // Throws «браузер занят: …» when another task of this app holds the agent Chromium.
+  const lock = acquireBrowserLock({ task: 'collect' });
   const collector = createCollector(databaseUrl, process.env.AGENT_BROWSER_SOCKET || defaultBrokerSocket, log);
   try {
     let ownerId: string | undefined;
@@ -51,13 +58,11 @@ async function main(): Promise<void> {
       ownerId = await collector.activeUserId(values.user) ?? undefined;
       if (!ownerId) throw new Error(`Активный пользователь ${values.user} не найден. Создайте его: npm run user:create -- --email ${values.user} --name …`);
     }
-    const reports = adHoc
-      ? [await collector.searches.runAdHoc(ownerId!, adHoc, { signal, dryRun })]
-      : await collector.searches.runSaved({ signal, dryRun, ...(ownerId ? { ownerId } : {}) });
-    if (!reports.length) console.log('Включённых сохранённых поисков нет: добавьте их через POST /api/searches или запустите разовый поиск (--help).');
-    for (const report of reports) console.log(`\n${searchReportLines(report, dryRun).join('\n')}`);
-    if (reports.some((report) => report.stopped === 'error')) process.exitCode = 1;
-  } finally { await collector.close(); }
+    const run = await collectJobs(collector, { adHoc, ownerId, signal, dryRun, easyApplyOnly }, consoleOutput);
+    if (run.failed) process.exitCode = 1;
+  } finally {
+    try { await collector.close(); } finally { lock.release(); }
+  }
 }
 
 main().catch((error: unknown) => {

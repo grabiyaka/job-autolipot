@@ -4,6 +4,8 @@ import { registerUserRoutes } from '../../src/users/UserRoutes.js';
 import { registerJobRoutes } from '../../src/jobs/JobRoutes.js';
 import { registerSearchRoutes } from '../../src/searches/SearchRoutes.js';
 import { registerTrackerRoutes } from '../../src/trackers/TrackerRoutes.js';
+import { registerAnswerRoutes } from '../../src/answers/AnswerRoutes.js';
+import { registerApplicationRoutes } from '../../src/applications/ApplicationRoutes.js';
 import type { UserCookieOptions } from '../../src/users/UserController.js';
 
 export function registerDomainRoutes(server: FastifyInstance, application: Application, cookie: UserCookieOptions): void {
@@ -11,4 +13,6 @@ export function registerDomainRoutes(server: FastifyInstance, application: Appli
   registerJobRoutes(server, application.jobs);
   registerSearchRoutes(server, application.searches);
   registerTrackerRoutes(server, application.trackers);
+  registerAnswerRoutes(server, application.answers);
+  registerApplicationRoutes(server, application.applications);
 }

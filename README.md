@@ -11,8 +11,9 @@
 LinkedIn через залогиненный agent Chromium (брокер, только чтение) — домен `searches`
 ([сборщик](docs/collector-plan.md)). `npm run score` оценивает их локальной qwen (Ollama) по профилю
 кандидата из [Job-Tracker](docs/trackers.md) и отправляет отобранные в его список To Apply — домены
-`scoring` и `trackers`. `npm run cycle` делает всё это одной командой. Домен [`jobs`](docs/jobs.md) хранит вакансии и их статусы. Подачи, Telegram
-и расписания ещё нет; страница «Вакансии» пока пустая.
+`scoring` и `trackers`. `npm run cycle` делает всё это одной командой. Домен [`jobs`](docs/jobs.md) хранит вакансии и их статусы. Telegram-бот и
+расписание — [docs/telegram.md](docs/telegram.md). Подача (`npm run apply`, [docs/applications.md](docs/applications.md)):
+агент заполняет форму LinkedIn Easy Apply и ждёт ✅, код и тесты готовы, ⏳ живая проверка. Страница «Вакансии» пока пустая.
 
 **С чего начать чтение** — [docs/overview.md](docs/overview.md): как устроен весь проект, путь
 вакансии по статусам, карта кода, связь с Job-Tracker, настройка, дорожная карта и глоссарий.
@@ -128,7 +129,7 @@ Job-Tracker; здесь хранится только его копия (`tracke
    склейка повторов, отправка `queued` в To Apply — [docs/overview.md](docs/overview.md#42-отбор-).
    Осталось: сравнить модели на живых данных. Критерий: из 50 живых вакансий в очередь попадают те,
    на которые ты бы подался сам.
-3. **Фаза 3** ⏳ план — [docs/phase3/README.md](docs/phase3/README.md). Порядок: банк ответов →
+3. **Фаза 3** 🔧 код готов: банк ответов `npm run answers`, бот `npm run bot` ([docs/telegram.md](docs/telegram.md)), подача `npm run apply` ([docs/applications.md](docs/applications.md)), агент с защитой ([docs/agent-runner.md](docs/agent-runner.md)); осталась приёмка 5 подач с ✅ — [docs/phase3/README.md](docs/phase3/README.md). Порядок: банк ответов →
    Telegram-бот (запуск сбора и оценки, расписание cron, вкл/выкл, отчёты) → подача через DeepSeek +
    Playwright MCP (LinkedIn Easy Apply, «стоп перед Submit», ✅ в Telegram, отметка в Job-Tracker) →
    автоподача. Проба DeepSeek 2026-11-03: форма заполнена за 84 с, около 2 центов.

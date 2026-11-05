@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.12.0" },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "install:all": "npm --prefix server ci && npm --prefix client ci",
@@ -25,6 +27,9 @@
     "collect": "npm --prefix server run collect --",
     "score": "npm --prefix server run score --",
     "cycle": "npm --prefix server run cycle --",
-    "browser:check": "npm --prefix server run browser:check --"
+    "browser:check": "npm --prefix server run browser:check --",
+    "answers": "npm --prefix server run answers --",
+    "bot": "npm --prefix server run bot --",
+    "apply": "npm --prefix server run apply --"
   }
 }

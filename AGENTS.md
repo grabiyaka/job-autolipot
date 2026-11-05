@@ -18,7 +18,9 @@
 - [Авторизация](docs/authentication.md) — регистрация, JWT, cookie, сессии и роли.
 - [Домен jobs](docs/jobs.md) — статусы, HTTP API и API конвейера.
 - [Сборщик вакансий](docs/collector-plan.md) — ядро, контракт модуля сайта и план источников.
-- [Фаза 3](docs/phase3/README.md) — план: банк ответов, Telegram-бот с расписанием, подача через DeepSeek; решения и проба.
+- [Фаза 3](docs/phase3/README.md) — банк ответов, Telegram-бот с расписанием, подача через DeepSeek; решения, проба, статусы пакетов.
+- [Запуск агента](docs/agent-runner.md) — `claude -p` на DeepSeek, хук-защита «не отправлять», lock браузера.
+- [Подача](docs/applications.md) — домен `applications`, `npm run apply`, ✅ перед отправкой, отметка в Job-Tracker.
 
 ## Разделение проекта
 

@@ -308,7 +308,8 @@ describe('Jobs: scoring and Job-Tracker sync pipeline API on SQLite', () => {
     }
 
     const unsynced = (await jobs.listUnsynced(ownerId)).filter((job) => !before.has(job.id));
-    expect(unsynced.map((job) => job.id)).toEqual([first, second]);
+    // Both may share one foundAt millisecond; the tie-break is the random id, so order is not asserted.
+    expect(unsynced.map((job) => job.id).sort()).toEqual([first, second].sort());
     expect((await jobs.listUnsynced(strangerId)).map((job) => job.id)).toEqual([strangers]);
 
     await expect(jobs.markSynced(strangerId, first, 'jt-1')).rejects.toMatchObject(missing);

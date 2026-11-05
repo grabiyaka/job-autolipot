@@ -2,12 +2,13 @@ import type { Actor } from '../../framework/core/actor.js';
 import { ApplicationError } from '../../framework/core/errors.js';
 import type { JobRepository } from './JobRepository.js';
 import { jobStatuses, twinKey } from './JobTypes.js';
-import type { JobDecision, JobFoundResult, JobInput, JobPipelineApi, JobScore, JobStatus, PipelineJob } from './JobTypes.js';
+import type { ApplyJobStatus, JobDecision, JobFoundResult, JobInput, JobPipelineApi, JobScore, JobStatus, PipelineJob } from './JobTypes.js';
 
 export { jobStatuses } from './JobTypes.js';
-export type { JobDecision, JobInput, JobScore, JobStatus, PipelineJob } from './JobTypes.js';
+export type { ApplyJobStatus, JobDecision, JobInput, JobScore, JobStatus, PipelineJob } from './JobTypes.js';
 
 const jobDecisions: readonly JobDecision[] = ['queued', 'rejected', 'skipped'];
+const applyStatuses: readonly ApplyJobStatus[] = ['queued', 'applying', 'applied', 'needs_input', 'failed', 'skipped'];
 
 /**
  * A job in one of these statuses, rejected after a score (by the model), or already sent to Job-Tracker
@@ -48,7 +49,7 @@ export type JobListQuery = Readonly<{
 export type NewJob = Readonly<{
   url: string; source: string; title: string; company: string; externalId: string | null;
   location: string | null; description: string | null; postedAt: Date | null; raw: string | null;
-  status: 'found' | 'rejected'; why: string | null;
+  status: 'found' | 'rejected' | 'queued'; why: string | null; trackerId?: string | null;
 }>;
 
 /** Only http(s), no fragment, no credentials. Source modules strip their own tracking parameters. */
@@ -64,8 +65,14 @@ export function canonicalJobUrl(value: string): string {
   return url.toString();
 }
 
-export function requireTransition(from: JobStatus, to: JobStatus): void {
-  if (!transitions[from].includes(to)) {
+/**
+ * The applier may also take an `applying` job back to the queue (the run stopped, the form must be
+ * filled again) or skip it (external, closed, rejected with ❌). A person cannot: the attempt is the applier's.
+ */
+const applierTransitions: Readonly<Partial<Record<JobStatus, readonly JobStatus[]>>> = { applying: ['queued', 'skipped'] };
+
+export function requireTransition(from: JobStatus, to: JobStatus, byApplier = false): void {
+  if (!transitions[from].includes(to) && !(byApplier && applierTransitions[from]?.includes(to))) {
     throw new ApplicationError('INVALID_JOB_STATUS', `Нельзя перевести вакансию из «${from}» в «${to}».`, 409);
   }
 }
@@ -211,6 +218,31 @@ export class JobService implements JobPipelineApi {
 
   findByTrackerId(ownerId: string, trackerId: string): Promise<Job | null> {
     return this.jobs.findByTrackerId(ownerId, trackerId.trim());
+  }
+
+  async findByUrl(ownerId: string, url: string): Promise<Job | null> {
+    let canonical: string;
+    try { canonical = canonicalJobUrl(url); } catch { return null; }
+    return this.jobs.findByUrl(ownerId, canonical);
+  }
+
+  findById(ownerId: string, id: string): Promise<Job | null> {
+    return this.jobs.find(ownerId, id);
+  }
+
+  async importQueued(ownerId: string, input: JobInput, trackerId: string): Promise<Job | null> {
+    const value = trackerId.trim();
+    if (!value) throw new ApplicationError('INVALID_TRACKER_ID', 'Нужен ID вакансии в Job-Tracker.', 400);
+    return this.jobs.create(ownerId, { ...newJob({ ...input, rejection: null }), status: 'queued', trackerId: value });
+  }
+
+  async recordApplyStatus(ownerId: string, id: string, status: ApplyJobStatus, why?: string): Promise<Job> {
+    if (!applyStatuses.includes(status)) throw new ApplicationError('INVALID_JOB_STATUS', `Статус подачи «${status}» неизвестен.`, 400);
+    const job = await this.owned(ownerId, id);
+    requireTransition(job.status, status, true);
+    return this.changed(await this.jobs.update(ownerId, id, job.status, {
+      status, ...(why !== undefined ? { why: why.trim() || null } : {}),
+    }));
   }
 
   async recordStatus(ownerId: string, id: string, status: JobStatus): Promise<Job> {

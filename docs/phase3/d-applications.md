@@ -38,6 +38,11 @@ JT To Apply (GET /api/ai/jobs?evaluation=any, старые первыми)
 3. Job-Tracker: в `plugins/job-tracker.ts` — `listJobs({evaluation:'any'})` уже есть; добавить
    `markApplied(jobId, {appliedAt, note})` (эндпоинт пакета Д). В `TrackerApi`: `listToApply(ownerId)`,
    `markApplied(ownerId, trackerId)`.
+   Контракт эндпоинта (готов, `docs/AI_API.md` в JT): тело strict `{appliedAt?, channel, agentName, note?}`
+   (`channel: "linkedin_easy_apply"`, `agentName: "job-autopilot/deepseek"`); `201 {created:true, applicationId}`;
+   `200 {created:false, reason:"already_applied", applicationId}` — считать успехом; **404 — вакансии уже нет
+   в To Apply (например, переведена вручную в UI): не повторять, отметить локально как applied с пометкой**;
+   409 (неоднозначная компания, дубль компания+должность) — оставить попытку `submitted` и сообщить в отчёт.
 4. `ApplicationService`:
    - `fillNext(ownerId, {limit, jobId?, signal})` — по одной вакансии (браузер один), lock браузера;
    - `submit(ownerId, applicationId)` — только из `ready`, `--resume`, затем `markApplied` в JT;

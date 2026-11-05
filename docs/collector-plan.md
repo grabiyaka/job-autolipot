@@ -42,12 +42,17 @@ CLI (`npm run collect -- --help` печатает справку):
 
 ```bash
 npm run collect -- --user me@x.com --source linkedin --query "node.js" [--location Remote] \
-  [--include "node,typescript"] [--exclude "java,android,qa"] [--dry-run] [--max-minutes 60]
+  [--include "node,typescript"] [--exclude "java,android,qa"] [--easy-apply] [--dry-run] [--max-minutes 60]
 # разовый поиск: вакансии пишутся в jobs, сам поиск и отчёт прогона не сохраняются
 
-npm run collect -- [--user me@x.com] [--dry-run] [--max-minutes 60]
+npm run collect -- [--user me@x.com] [--easy-apply] [--dry-run] [--max-minutes 60]
 # включённые сохранённые поиски всех активных пользователей (или одного); отчёт каждого — в search_runs
 ```
+
+`--easy-apply` — только вакансии с LinkedIn Easy Apply (`f_AL=true` в адресе выдачи). Для разового
+поиска флаг задаёт поле поиска; для сохранённых — включает фильтр только на этот прогон, не меняя их.
+Постоянно — поле `easyApplyOnly` в `POST`/`PATCH /api/searches`. На время сбора `collect` и `cycle`
+берут блокировку браузера `server/data/browser.lock` ([agent-runner.md](agent-runner.md#блокировка-браузера-pluginsbrowser-lockts)).
 
 ### Фильтр по названию
 
@@ -79,8 +84,9 @@ npm run collect -- [--user me@x.com] [--dry-run] [--max-minutes 60]
 (сейчас `https://www.linkedin.com/`), и `links()` возвращает только такие ссылки.
 
 - Вкладка одна и общая с Telegram-ботом и local-agent. Если страница сменилась между вызовами,
-  `text()` и `links()` падают с `BrowserError`, а не смешивают две страницы. Отдельной
-  блокировки вкладки пока нет.
+  `text()` и `links()` падают с `BrowserError`, а не смешивают две страницы. Между задачами
+  этого приложения действует файловая блокировка `server/data/browser.lock` (сейчас её берут `collect`
+  и `cycle`); бот local-agent о ней не знает.
 - `BrowserUnavailableError` (нет сокета, отказ соединения, таймаут 120 с) останавливает весь
   прогон: остальные поиски не выполняются. `BrowserBlockedError` — отказ allow-list.
 - Проверено вживую 2026-11-03: `npm run browser:check -- --open https://www.linkedin.com/jobs/`

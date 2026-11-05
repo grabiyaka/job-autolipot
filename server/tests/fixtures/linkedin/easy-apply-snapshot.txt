@@ -1,0 +1,27 @@
+### Page
+- Page URL: https://www.linkedin.com/jobs/view/4478980483/?companyName=It%27s+Prodigy&applicantTrackingSystemName=Join
+- Page Title: Full Stack Developer | It's Prodigy | LinkedIn
+- Console: 101 errors, 4 warnings
+### Snapshot
+```yaml
+- generic [ref=f11e2]:
+  - dialog [active] [ref=f11e1007]:
+    - button "Dismiss" [ref=f11e1008] [cursor=pointer]
+    - generic [ref=f11e1012]:
+      - banner [ref=f11e1013]:
+        - heading "Apply to It's Prodigy" [level=2] [ref=f11e1014]
+      - generic [ref=f11e1020]:
+        - generic [ref=f11e1021]:
+          - progressbar "25 percent complete" [ref=f11e1023]
+          - paragraph [ref=f11e1024]: 1/4 pages
+        - generic [ref=f11e1028]:
+          - paragraph [ref=f11e1029]: Contact info
+            - status [ref=f11e1076]
+            - textbox "Enter city or location" [ref=f11e1079]: Dublin, Ireland
+        - contentinfo [ref=f11e1082]:
+          - button "Next" [ref=f11e1083] [cursor=pointer]
+    - heading "0 notifications" [level=2] [ref=f11e1086]
+  - generic [ref=f11e4]:
+    - link "Post a job" [ref=f11e930] [cursor=pointer]:
+      - /url: https://www.linkedin.com/talent/post-a-job
+```

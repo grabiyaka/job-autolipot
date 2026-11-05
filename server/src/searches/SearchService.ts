@@ -20,6 +20,8 @@ export type Search = Readonly<{
   includeTitle: string[];
   /** A job whose title has any of these words is rejected before its page is opened. */
   excludeTitle: string[];
+  /** Only jobs with LinkedIn Easy Apply. */
+  easyApplyOnly: boolean;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -29,7 +31,8 @@ export type OwnedSearch = Search & Readonly<{ ownerId: string }>;
 
 export type SearchInput = SearchFieldsInput & Readonly<{ enabled?: boolean }>;
 export type SearchChange = Readonly<{
-  keywords?: string; location?: string | null; includeTitle?: readonly string[]; excludeTitle?: readonly string[]; enabled?: boolean;
+  keywords?: string; location?: string | null; includeTitle?: readonly string[]; excludeTitle?: readonly string[];
+  easyApplyOnly?: boolean; enabled?: boolean;
 }>;
 
 export type SearchRunCounts = {
@@ -141,6 +144,7 @@ export class SearchService {
       location: change.location === undefined ? search.location : change.location,
       includeTitle: change.includeTitle ?? search.includeTitle,
       excludeTitle: change.excludeTitle ?? search.excludeTitle,
+      easyApplyOnly: change.easyApplyOnly ?? search.easyApplyOnly,
     }, this.registry);
     const { source: _source, ...changed } = fields;
     const updated = await this.searches.update(actor.id, id, { ...changed, enabled: change.enabled ?? search.enabled });
@@ -165,14 +169,15 @@ export class SearchService {
   /**
    * Runs the enabled saved searches (of one owner, or of everyone) one after another and stores
    * each report. A failing site is reported and the rest continue; a dry run stores nothing.
+   * `easyApplyOnly` narrows every search of this run to Easy Apply jobs without changing the saved searches.
    */
-  async runSaved(options: SearchRunOptions & Readonly<{ ownerId?: string }>): Promise<SearchRunReport[]> {
+  async runSaved(options: SearchRunOptions & Readonly<{ ownerId?: string; easyApplyOnly?: boolean }>): Promise<SearchRunReport[]> {
     const reports: SearchRunReport[] = [];
     const stoppedSources = new Map<string, string>();
     for (const search of await this.searches.listEnabled(options.ownerId)) {
       if (options.signal.aborted) break;
       const source = this.registry.find((candidate) => candidate.id === search.source);
-      const query = searchQuery(search);
+      const query = searchQuery({ ...search, easyApplyOnly: search.easyApplyOnly || (options.easyApplyOnly ?? false) });
       const stopReason = stoppedSources.get(search.source);
       if (stopReason !== undefined) {
         reports.push({ ...this.emptyReport({ searchId: search.id, ownerId: search.ownerId, source: search.source, query }), stopped: 'error', error: `пропущен: ${stopReason}` });

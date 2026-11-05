@@ -46,6 +46,23 @@ export type TrackerEvaluationInput = Readonly<{
 export type TrackerJobPage = Readonly<{ ids: string[]; nextCursor: string | null }>;
 export type TrackerWorklistQuery = Readonly<{ evaluation: 'none' | 'stale' | 'needed' | 'any'; cursor?: string | null }>;
 
+/** One To Apply row of `GET /api/ai/jobs` with what applying needs. */
+export type TrackerToApplyJob = Readonly<{ id: string; title: string; company: string; url: string; source: string | null }>;
+export type TrackerToApplyPage = Readonly<{ items: TrackerToApplyJob[]; nextCursor: string | null }>;
+
+/** Body of `POST /api/ai/jobs/:id/application` (strict on JT's side). */
+export type TrackerApplicationInput = Readonly<{ appliedAt?: string; channel: string; agentName: string; note?: string }>;
+
+/**
+ * `created` (201) and `already_applied` (200) both mean "JT has it as APPLIED".
+ * `not_found` (404): the job is no longer in To Apply (converted by hand) — not to be retried.
+ * `conflict` (409): ambiguous company or a company + title duplicate; the owner sorts it out in JT.
+ */
+export type TrackerMarkResult =
+  | Readonly<{ status: 'created' | 'already_applied'; applicationId: string }>
+  | Readonly<{ status: 'not_found' }>
+  | Readonly<{ status: 'conflict'; message: string }>;
+
 /** At most this many vacancies go into one batch request. */
 export const trackerBatchLimit = 50;
 
@@ -59,6 +76,10 @@ export interface JobTrackerClient {
   listJobs(query: TrackerWorklistQuery): Promise<TrackerJobPage>;
   /** Appends an evaluation to a JT opportunity. */
   recordEvaluation(trackerJobId: string, evaluation: TrackerEvaluationInput): Promise<void>;
+  /** A page (up to 100) of To Apply rows with title, company and URL, oldest first. */
+  listToApply(cursor?: string | null): Promise<TrackerToApplyPage>;
+  /** Turns the To Apply row into an APPLIED Application; call only after a real submit. */
+  markApplied(trackerJobId: string, input: TrackerApplicationInput): Promise<TrackerMarkResult>;
 }
 
 /**
@@ -120,4 +141,17 @@ export interface TrackerApi {
    * stops after one batch and the next run sends the rest. JT failures end up in the report.
    */
   pushQueued(ownerId: string, options?: TrackerPushOptions): Promise<TrackerPushReport>;
+}
+
+/** What applying needs from Job-Tracker: the To Apply list and the "applied" mark. */
+export interface TrackerApplyApi {
+  /** The owner's whole To Apply list, oldest first (at most 1000 rows). JT failures are thrown as ApplicationError. */
+  listToApply(ownerId: string): Promise<TrackerToApplyJob[]>;
+  /**
+   * Records in JT that the owner applied to this To Apply row (`channel` linkedin_easy_apply).
+   * Outages and refusals are thrown as TrackerError, so the caller can retry later.
+   */
+  markApplied(ownerId: string, trackerJobId: string, details: Readonly<{ appliedAt: Date; note?: string }>): Promise<TrackerMarkResult>;
+  /** False when JOB_TRACKER_URL / JOB_TRACKER_TOKEN are not set. */
+  readonly configured: boolean;
 }

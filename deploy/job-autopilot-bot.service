@@ -1,0 +1,25 @@
+# Пример юнита Telegram-бота job-autopilot (docs/telegram.md). Устанавливается вручную:
+#   sudo cp deploy/job-autopilot-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now job-autopilot-bot
+#   journalctl -u job-autopilot-bot -f
+# Настройки (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, BOT_USER…) бот читает сам из корневого .env.
+[Unit]
+Description=job-autopilot Telegram bot (collect / score / cycle, schedules)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=elijah
+WorkingDirectory=/home/elijah/projects/job-autopilot
+# systemd требует абсолютный путь; node и npm берутся из PATH ниже (Node из nvm: при смене версии поправьте путь).
+Environment=PATH=/home/elijah/.nvm/versions/node/v22.23.3/bin:/home/elijah/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env npm run bot
+# SIGTERM: бот останавливает текущую задачу (дописывает страницу или вакансию) и выходит.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

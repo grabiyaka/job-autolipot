@@ -250,6 +250,36 @@ describe('Searches on SQLite', () => {
     });
   });
 
+  describe('Easy Apply only', () => {
+    /** A source that remembers the queries it was asked. */
+    function queryRecorder() {
+      const queries: unknown[] = [];
+      const { source } = fakeSource('fake', { pages: [] });
+      return { queries, source: { ...source, async *search(_context, query) { queries.push(query); } } as JobSource };
+    }
+
+    it('passes the saved flag to the source and the run flag without saving it', async () => {
+      const owner = await freshOwner();
+      const { queries, source } = queryRecorder();
+      const service = serviceWith(memoryJobs().jobs, [source]);
+      const plain = await service.create(actor(owner), { source: 'fake', keywords: 'node' });
+      const easy = await service.create(actor(owner), { source: 'fake', keywords: 'vue', easyApplyOnly: true });
+      expect([plain.easyApplyOnly, easy.easyApplyOnly]).toEqual([false, true]);
+
+      await service.runSaved({ signal: signal(), ownerId: owner });
+      expect(queries).toEqual([{ keywords: 'node' }, { keywords: 'vue', easyApplyOnly: true }]);
+
+      queries.length = 0;
+      await service.runSaved({ signal: signal(), ownerId: owner, easyApplyOnly: true });
+      expect(queries).toEqual([{ keywords: 'node', easyApplyOnly: true }, { keywords: 'vue', easyApplyOnly: true }]);
+      expect((await service.list(actor(owner))).map((search) => search.easyApplyOnly)).toEqual([false, true]);
+
+      queries.length = 0;
+      await service.runAdHoc(owner, { source: 'fake', keywords: 'go', easyApplyOnly: true }, { signal: signal(), dryRun: true });
+      expect(queries).toEqual([{ keywords: 'go', easyApplyOnly: true }]);
+    });
+  });
+
   describe('saved searches', () => {
     it('runs enabled searches in order, records each run and isolates a failing source', async () => {
       const owner = await freshOwner();
@@ -431,6 +461,10 @@ describe('Searches HTTP API', () => {
     const changed = await server.inject({ method: 'PATCH', url: `/api/searches/${search.id}`, headers: owner, payload: { includeTitle: [], excludeTitle: ['android'] } });
     expect(changed.statusCode).toBe(200);
     expect(changed.json()).toMatchObject({ keywords: 'node.js', location: 'Remote', includeTitle: [], excludeTitle: ['android'] });
+
+    expect(changed.json()).toMatchObject({ easyApplyOnly: false });
+    const easy = await server.inject({ method: 'PATCH', url: `/api/searches/${search.id}`, headers: owner, payload: { easyApplyOnly: true } });
+    expect(easy.json()).toMatchObject({ easyApplyOnly: true, excludeTitle: ['android'] });
 
     const tooLong = await server.inject({ method: 'PATCH', url: `/api/searches/${search.id}`, headers: owner, payload: { excludeTitle: ['x'.repeat(61)] } });
     expect(tooLong.statusCode).toBe(400);

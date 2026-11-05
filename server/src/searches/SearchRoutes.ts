@@ -15,7 +15,7 @@ const titleWords = { type: 'array', maxItems: 50, items: { type: 'string', minLe
 const searchProperties = {
   id: { type: 'string' }, source: { type: 'string' }, keywords: { type: 'string' }, location: nullableText,
   includeTitle: { type: 'array', items: { type: 'string' } }, excludeTitle: { type: 'array', items: { type: 'string' } },
-  enabled: { type: 'boolean' }, createdAt: date, updatedAt: date,
+  easyApplyOnly: { type: 'boolean' }, enabled: { type: 'boolean' }, createdAt: date, updatedAt: date,
 } as const;
 const searchSchema = {
   type: 'object', additionalProperties: false, required: Object.keys(searchProperties), properties: searchProperties,
@@ -60,7 +60,7 @@ export function registerSearchRoutes(server: FastifyInstance, searches: SearchSe
         type: 'object', additionalProperties: false, required: ['source', 'keywords'],
         properties: {
           source: { type: 'string', minLength: 1, maxLength: 40 }, keywords, location,
-          includeTitle: titleWords, excludeTitle: titleWords, enabled: { type: 'boolean' },
+          includeTitle: titleWords, excludeTitle: titleWords, easyApplyOnly: { type: 'boolean' }, enabled: { type: 'boolean' },
         },
       },
       response: { 201: searchSchema, ...errors },
@@ -74,7 +74,9 @@ export function registerSearchRoutes(server: FastifyInstance, searches: SearchSe
       params: idParams,
       body: {
         type: 'object', additionalProperties: false, minProperties: 1,
-        properties: { keywords, location, includeTitle: titleWords, excludeTitle: titleWords, enabled: { type: 'boolean' } },
+        properties: {
+          keywords, location, includeTitle: titleWords, excludeTitle: titleWords, easyApplyOnly: { type: 'boolean' }, enabled: { type: 'boolean' },
+        },
       },
       response: { 200: searchSchema, ...errors },
     },

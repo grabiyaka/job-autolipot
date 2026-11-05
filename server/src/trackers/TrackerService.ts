@@ -6,8 +6,8 @@ import type { UserApi } from '../users/UserTypes.js';
 import type { TrackerRepository } from './TrackerRepository.js';
 import { trackerBatchLimit, TrackerError } from './TrackerTypes.js';
 import type {
-  JobTrackerClient, TrackerApi, TrackerEvaluationInput, TrackerJobInput, TrackerProfile, TrackerPushOptions,
-  TrackerPushReport, TrackerPushResult, TrackerUser, TrackerVerdict,
+  JobTrackerClient, TrackerApi, TrackerApplyApi, TrackerEvaluationInput, TrackerJobInput, TrackerMarkResult, TrackerProfile, TrackerPushOptions,
+  TrackerPushReport, TrackerPushResult, TrackerToApplyJob, TrackerUser, TrackerVerdict,
 } from './TrackerTypes.js';
 
 export type StoredTrackerProfile = Readonly<{ revision: number; etag: string | null; markdown: string; fetchedAt: Date }>;
@@ -23,6 +23,11 @@ export type TrackerStatus = Readonly<{
 export type TrackerProfileView = Readonly<{ markdown: string; revision: number; fetchedAt: string; fromCache: boolean }>;
 
 const evaluatorName = 'job-autopilot';
+/** How applications appear in JT: `Applied by <agentName> via <channel>.` */
+export const trackerApplyChannel = 'linkedin_easy_apply';
+export const trackerAgentName = 'job-autopilot/deepseek';
+/** Pages of 100: the To Apply list is read whole, but never more than this. */
+const toApplyMaxPages = 10;
 const skipReasons = { duplicate_opportunity: 'уже в Job-Tracker', already_applied: 'уже подавался' } as const;
 
 /** JT's verdict vocabulary over our 0–100 score. */
@@ -73,7 +78,7 @@ const isOutage = (error: unknown): error is TrackerError =>
  * Everything this app does with Job-Tracker. One JT token belongs to one JT user, so only the
  * user of this app with the same email may use it; for everyone else the tracker does not exist.
  */
-export class TrackerService implements TrackerApi {
+export class TrackerService implements TrackerApi, TrackerApplyApi {
   /** The JT user of the token; it does not change while the process runs. */
   private tokenOwner: Promise<TrackerUser> | null = null;
 
@@ -228,6 +233,39 @@ export class TrackerService implements TrackerApi {
       }
     }
     if (failure) throw failure;
+  }
+
+  // ── Applying ──
+
+  get configured(): boolean {
+    return this.client !== null;
+  }
+
+  async listToApply(ownerId: string): Promise<TrackerToApplyJob[]> {
+    const client = this.requireClient();
+    try {
+      await this.requireLinked(client, ownerId);
+      const items: TrackerToApplyJob[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < toApplyMaxPages; page++) {
+        const found = await client.listToApply(cursor);
+        items.push(...found.items);
+        cursor = found.nextCursor;
+        if (!cursor) break;
+      }
+      return items;
+    } catch (error) {
+      throw this.failure(error);
+    }
+  }
+
+  async markApplied(ownerId: string, trackerJobId: string, details: Readonly<{ appliedAt: Date; note?: string }>): Promise<TrackerMarkResult> {
+    const client = this.requireClient();
+    await this.requireLinked(client, ownerId);
+    return client.markApplied(trackerJobId, {
+      appliedAt: details.appliedAt.toISOString(), channel: trackerApplyChannel, agentName: trackerAgentName,
+      ...(details.note ? { note: details.note.slice(0, 20_000) } : {}),
+    });
   }
 
   // ── Linking and errors ──

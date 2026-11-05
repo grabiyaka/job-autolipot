@@ -27,6 +27,12 @@ describe('cycle flags', () => {
       .toEqual({ source: 'linkedin', keywords: 'node', location: null, includeTitle: ['node', 'ts'], excludeTitle: ['java'] });
   });
 
+  it('--easy-apply narrows an ad hoc search and alone does not make one', () => {
+    expect(adHocSearch({ user: 'me@example.com', source: 'linkedin', query: 'node', 'easy-apply': true }))
+      .toMatchObject({ source: 'linkedin', keywords: 'node', easyApplyOnly: true });
+    expect(adHocSearch({ user: 'me@example.com', 'easy-apply': true })).toBeNull();
+  });
+
   it('asks for user, source and query once any search flag is given', () => {
     expect(() => adHocSearch({ location: 'Remote' })).toThrow('--user, --source и --query');
     expect(() => adHocSearch({ user: 'me@example.com', query: 'node' })).toThrow('--source');

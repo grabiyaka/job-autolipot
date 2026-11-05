@@ -31,6 +31,12 @@ describe('LinkedIn parser', () => {
       .toBe('https://www.linkedin.com/jobs/search/?keywords=vue+developer&location=Dublin%2C+Ireland&sortBy=DD&start=50&skipRedirect=true');
   });
 
+  it('adds the Easy Apply filter f_AL=true only when asked', () => {
+    expect(searchUrl({ keywords: 'node.js', location: 'Remote', easyApplyOnly: true }, 0))
+      .toBe('https://www.linkedin.com/jobs/search/?keywords=node.js&f_WT=2&f_AL=true&sortBy=DD&skipRedirect=true');
+    expect(searchUrl({ keywords: 'node.js', easyApplyOnly: false }, 0)).not.toContain('f_AL');
+  });
+
   it('recognizes job links and nothing else', () => {
     expect(jobIdFromUrl('https://www.linkedin.com/jobs/view/4484680584/?eBP=X&refId=x&trk=flagship3_search_srp_jobs')).toBe('4484680584');
     expect(jobIdFromUrl('https://www.linkedin.com/jobs/view/backend-engineer-at-acme-1234567890/')).toBe('1234567890');

@@ -59,6 +59,9 @@ export type JobScore = Readonly<{ score: number; why?: string | null; redFlags?:
 /** Decisions the scorer makes after a score: queue, reject, or skip a repeat. */
 export type JobDecision = 'queued' | 'rejected' | 'skipped';
 
+/** Statuses the applier moves a job through; `why` explains skipped and failed. */
+export type ApplyJobStatus = 'queued' | 'applying' | 'applied' | 'needs_input' | 'failed' | 'skipped';
+
 /** What pipeline stages need from the jobs domain; they act on behalf of the owner. */
 export interface JobPipelineApi {
   /** URLs the owner has not seen yet, so the collector loads details only for new jobs. */
@@ -84,6 +87,17 @@ export interface JobPipelineApi {
   markSynced(ownerId: string, id: string, trackerId: string): Promise<PipelineJob>;
   /** The owner's job linked to this Job-Tracker opportunity; null when there is none. */
   findByTrackerId(ownerId: string, trackerId: string): Promise<PipelineJob | null>;
+  /** The owner's job with this URL (canonicalized the same way as on save); null when there is none. */
+  findByUrl(ownerId: string, url: string): Promise<PipelineJob | null>;
+  /** The owner's job by id; null when there is none or it is another user's. */
+  findById(ownerId: string, id: string): Promise<PipelineJob | null>;
+  /**
+   * A Job-Tracker To Apply row the owner has no job for: saved as `queued` and linked to `trackerId`.
+   * Returns null when a job with that URL appeared meanwhile.
+   */
+  importQueued(ownerId: string, input: JobInput, trackerId: string): Promise<PipelineJob | null>;
+  /** Moves the job along the applying statuses; a given `why` replaces the stored reason. */
+  recordApplyStatus(ownerId: string, id: string, status: ApplyJobStatus, why?: string): Promise<PipelineJob>;
 }
 
 /** The part of the pipeline API the collector uses. */

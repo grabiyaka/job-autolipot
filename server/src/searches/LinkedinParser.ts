@@ -12,13 +12,14 @@ const host = 'www.linkedin.com';
 /** LinkedIn shows 25 results per search page; `start` moves by that. */
 export const resultsPerPage = 25;
 const remoteFilter = '2'; // f_WT (workplace type): 2 = remote
+const easyApplyFilter = 'true'; // f_AL: only jobs with the Easy Apply button (checked live 2026-11-03)
 
 const idPattern = /^[0-9]{1,20}$/;
 const slugIdPattern = /^[a-z0-9%_.-]*-([0-9]{1,20})$/; // /jobs/view/backend-engineer-at-acme-1234567890/
 const wallPaths = ['/login', '/authwall', '/checkpoint', '/uas/'];
 
 /**
- * Newest first. A location "Remote" becomes the remote filter instead of a place.
+ * Newest first. A location "Remote" becomes the remote filter instead of a place; `easyApplyOnly` adds f_AL.
  * `skipRedirect=true` keeps the classic results list: since 2026-11-03 LinkedIn sends this account from
  * /jobs/search/ to the AI search (/jobs/search-results/), whose cards are not links and carry no job id.
  */
@@ -27,6 +28,7 @@ export function searchUrl(query: SearchQuery, page: number): string {
   const location = query.location?.trim();
   if (location && location.toLowerCase() === 'remote') params.set('f_WT', remoteFilter);
   else if (location) params.set('location', location);
+  if (query.easyApplyOnly) params.set('f_AL', easyApplyFilter);
   params.set('sortBy', 'DD');
   if (page > 0) params.set('start', String(page * resultsPerPage));
   params.set('skipRedirect', 'true');

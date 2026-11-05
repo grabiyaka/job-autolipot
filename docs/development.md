@@ -57,6 +57,9 @@ docker compose exec api npm run user:create -- --email admin@example.com --name 
 | `AGENT_BROWSER_SOCKET` | Сокет брокера agent Chromium для сборщика, по умолчанию `/run/agent-browser/broker.sock`. |
 | `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_NUM_CTX`, `OLLAMA_TIMEOUT_MS` | Локальная модель для `npm run score`; значения по умолчанию — в `.env.example`. |
 | `JOB_TRACKER_URL`, `JOB_TRACKER_TOKEN` | Job-Tracker: профиль и To Apply ([trackers.md](trackers.md)). Пока хотя бы одно пусто, интеграция выключена. |
+| `APPLY_TIMEOUT_MS`, `DEEPSEEK_SETTINGS`, `PLAYWRIGHT_MCP_URL`, `AGENT_CWD` | Агент подачи ([agent-runner.md](agent-runner.md)): предел запуска (10 мин), настройки `claude` для DeepSeek, адрес Playwright MCP, рабочая папка `claude` (`/srv/agent-files/agent-run`). |
+| `DEEPSEEK_PRICE_INPUT`, `DEEPSEEK_PRICE_CACHE_READ`, `DEEPSEEK_PRICE_OUTPUT` | Цены DeepSeek, USD за 1M токенов; без них агент подачи не создаётся. |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `BOT_USER`, `SCHEDULE_TIMEZONE`, `BOT_SCHEDULED_REPORT` | Telegram-бот `npm run bot` и расписание ([telegram.md](telegram.md)): токен и единственный чат, владелец, часовой пояс (`Europe/Dublin`), когда слать отчёт о плановом запуске (`changes`). |
 
 Подробнее про вход и cookie — в [authentication.md](authentication.md).
 

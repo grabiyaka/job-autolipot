@@ -3,7 +3,8 @@ import { parseArgs } from 'node:util';
 import { createScorer } from '../framework/composition/create-scorer.js';
 import { jobTrackerConfigFromEnv, ollamaConfigFromEnv } from '../plugins/environment.js';
 import { SCORE_THRESHOLD } from '../src/scoring/ScoringRules.js';
-import { profileSkip, scoreOptions, scoreSettings, scoringLine, scoringSummaryLines } from './pipeline-cli.js';
+import { scoreOptions, scoreSettings } from './pipeline-cli.js';
+import { consoleOutput, scoreOwners } from './pipeline-tasks.js';
 
 const usage = `Оценка найденных вакансий локальной моделью (Ollama) по профилю из Job-Tracker.
 
@@ -42,22 +43,10 @@ async function main(): Promise<void> {
       owners = await scorer.activeUsers();
     }
 
-    for (const owner of owners) {
-      if (interrupt.signal.aborted) break;
-      console.log(`\n${owner.email}`);
-      const report = await scorer.scoring.scoreFound(owner.id, {
-        ...tuning, dryRun, push, signal: interrupt.signal,
-        onJob: (line) => console.log(`  ${scoringLine(line)}`),
-      });
-      if (report.stopped === 'profile') {
-        console.log(`  пропущен: ${profileSkip(report)}`);
-        if (values.user) process.exitCode = 1;
-        continue;
-      }
-      if (!report.lines.length && report.stopped === 'end') console.log('  новых вакансий для оценки нет');
-      console.log(scoringSummaryLines(report, push).join('\n'));
-      if (report.stopped === 'model_unavailable') { process.exitCode = 1; break; }
-    }
+    const run = await scoreOwners(scorer, owners, {
+      ...tuning, dryRun, push, signal: interrupt.signal, namedOwner: Boolean(values.user), announceEmpty: false,
+    }, consoleOutput);
+    if (run.failed) process.exitCode = 1;
   } finally { await scorer.close(); }
 }
 

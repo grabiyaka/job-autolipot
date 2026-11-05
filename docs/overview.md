@@ -17,11 +17,14 @@
    и ставит оценку 0–100. Подходящие (≥ 50) становятся `queued`.
 3. ✅ **Передача в Job-Tracker.** Отобранные вакансии вместе с оценкой уходят в список To Apply
    приложения [Job-Tracker](trackers.md) (JT), где человек ведёт свой поиск работы.
-4. 📝 **Подача.** Агент заполняет форму отклика; первое время останавливается перед Submit.
-5. 📝 **Telegram.** Отчёт за прогон и вопросы, на которые агент не знает ответа.
+4. ✅ **Подача.** Агент заполняет форму LinkedIn Easy Apply из To Apply и останавливается перед Submit;
+   отправка — после твоего ✅, затем отметка APPLIED в JT (⏳ живая проверка).
+5. ✅ **Telegram и расписание.** Бот запускает сбор, оценку и заполнение вручную и по cron, присылает
+   отчёт, показывает статус и банк ответов, формы с ✅ / ❌ и вопросы агента (ответ реплаем).
 
-Итог сейчас: одна команда сбора и одна команда оценки превращают выдачу LinkedIn в короткий
-список оценённых вакансий в JT. Подачи и Telegram ещё нет.
+Итог сейчас: одна команда сбора и одна команда оценки (или бот по расписанию) превращают выдачу
+LinkedIn в короткий список оценённых вакансий в JT; `npm run apply` (или `/run apply`) заполняет формы
+из него, а отправляет их твоё ✅.
 
 Почему локальная модель не ищет сама: железо — GTX 1060 6GB и 16GB RAM, то есть модели на 3–4B.
 Страница LinkedIn — 10–50 тысяч токенов, и модель такого размера в многошаговой работе с браузером
@@ -57,16 +60,17 @@
                                 ▼
                 Job-Tracker: Postgres JT, список To Apply
                                 │
- ┌─ 3. Подача 📝 ──── DeepSeek (claude -p) + Playwright MCP, «стоп перед Submit» ┐
+ ┌─ 3. Подача ✅ ──── DeepSeek (claude -p) + Playwright MCP, «стоп перед Submit» ┐
  └──────────────────────────────┬──────────────────────────────────────────────┘
                                 ▼
- ┌─ 4. Telegram 📝 ── отчёт, вопросы, ответы в банк ответов ──────────────────────┐
+ ┌─ 4. Telegram ✅ ── запуск 1–3 вручную и по cron, отчёт, ✅/❌, вопросы агента ┐
  └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Всё это одной командой — `npm run cycle` ([scripts/cycle.ts](../server/scripts/cycle.ts)): сбор, затем
 отбор всех `found` (и новых, и оставшихся с прошлых прогонов), затем отправка в JT. Отдельно этапы
-запускаются `npm run collect` и `npm run score`.
+запускаются `npm run collect` и `npm run score`. Те же прогоны запускает Telegram-бот (`npm run bot`):
+командой `/run` или по расписанию ([telegram.md](telegram.md)).
 
 ### Где живут данные
 
@@ -106,9 +110,11 @@
 | `scored` | `scored`, `queued`, `rejected`, `skipped` | scorer сразу после оценки: ≥ порога → `queued`, иначе `rejected`; человек |
 | `rejected` | `scored`, `queued`, `skipped` | человек может вернуть отсеянную в очередь |
 | `queued` | `rejected`, `skipped` | человек; трекер-сервис ставит `skipped`, если JT ответил «уже есть» или «уже подавался» |
-| `queued` | `applying` | 📝 applier |
-| `applying` | `applied`, `needs_input`, `failed` | 📝 applier (`recordStatus`) |
-| `needs_input` | `queued`, `applying`, `skipped` | 📝 после ответа человека |
+| `found`, `scored`, `rejected` | `queued` | applier: вакансия есть в JT To Apply ([applications.md](applications.md)) |
+| `queued` | `applying` | applier (`recordApplyStatus`) |
+| `applying` | `applied`, `needs_input`, `failed` | applier: отправлено после ✅, нужен ответ, агент не справился |
+| `applying` | `queued`, `skipped` | **только applier**: прогон остановлен / форма заполняется заново; внешняя подача, закрыта, ❌ |
+| `needs_input` | `queued`, `applying`, `skipped` | applier: на все вопросы ответили → `queued`; ❌ → `skipped` |
 | `failed` | `queued`, `skipped` | человек |
 | `skipped` | `queued` | человек |
 | `applied` | — | финальный |
@@ -246,11 +252,27 @@ JT сам проверяет повторы: по нормализованном
 используется копия (`fromCache: true`); копии нет — ошибка `TRACKER_UNAVAILABLE` /
 `TRACKER_RATE_LIMITED`. Отказ по токену (401/403) копией не прикрывается: `TRACKER_UNAUTHORIZED`.
 
-### 4.4. Подача 📝, Telegram 📝, расписание 📝
+### 4.4. Telegram и расписание ✅, подача ✅
 
-Таблицы уже есть в схеме: `applications` (попытка, скриншоты, сессия агента, токены и стоимость),
-`questions` (вопросы агента, `open → answered → used`), `answers` (банк ответов пользователя).
-Кода, который их заполняет, нет. План — в [README](../README.md#идея) и [guide.md](guide.md#6-дорожная-карта).
+**Telegram-бот** (`npm run bot`, [telegram.md](telegram.md)) — отдельный долгоживущий процесс. Он
+отвечает только `TELEGRAM_CHAT_ID` и работает от имени одного владельца (`BOT_USER` или единственный
+активный пользователь). Задачи `collect`, `score` и `cycle` выполняются в процессе бота через те же
+сервисы и общий модуль `scripts/pipeline-tasks.ts`, что и CLI. Одновременно идёт только одна задача,
+а для браузера бот берёт тот же lock, что и CLI. `/stop` останавливает задачу через `AbortController`.
+
+**Расписание** — домен `schedules`: таблица `schedules` (одно расписание на задачу, cron и часовой
+пояс, по умолчанию `Europe/Dublin`; новое выключено до `/on`) и история запусков `task_runs`
+(`manual`/`schedule`, `running → ok | error | aborted`, `busy`). Ближайший запуск считает `croner`.
+Бот держит один таймер; пропущенные, пока он был выключен, запуски не догоняются.
+
+**Подача** — домен `applications` ([applications.md](applications.md)): вакансии из JT To Apply по одной,
+агент (`claude -p` на DeepSeek + Playwright MCP, [agent-runner.md](agent-runner.md)) заполняет форму
+LinkedIn Easy Apply и останавливается перед Submit. Попытка — строка `applications`
+(`running → ready → submitted → applied`, или `needs_input` / `skipped` / `failed`, сессия агента, токены
+и стоимость), вопросы агента — `questions` (`open → answered → used`), ответы на них идут в `answers`.
+Отправка — только после ✅ (`npm run apply -- --submit`, кнопка в боте, HTTP), затем отметка APPLIED в JT.
+Лимиты — запусков агента за прогон и $ в сутки. В боте: `/run apply`, расписание `apply`, ✅ / ❌, ответ
+реплаем на вопрос.
 
 ## 5. Карта кода
 
@@ -313,19 +335,42 @@ JT сам проверяет повторы: по нормализованном
 | `TrackerRoutes.ts`, `TrackerController.ts` | `/api/tracker/status`, `/api/tracker/profile`, `/api/tracker/push` |
 | `TrackerService.ts` | привязка по email, кеш профиля, отправка пачки, досылка оценок, verdict |
 | `TrackerRepository.ts` | таблица `tracker_profiles` |
-| `TrackerTypes.ts` | `JobTrackerClient`, `TrackerError`, `TrackerApi` для scoring, отчёт отправки |
+| `TrackerTypes.ts` | `JobTrackerClient`, `TrackerError`, `TrackerApi` для scoring, `TrackerApplyApi` (To Apply, отметка APPLIED) для подачи, отчёт отправки |
+| **answers/** | банк ответов, [guide.md](guide.md#банк-ответов--npm-run-answers) |
+| `AnswerRoutes.ts`, `AnswerController.ts` | `/api/answers`: список, запись (`PUT`, по ключу вопроса), удаление |
+| `AnswerService.ts` | сценарии владельца (`list`, `put`, `remove`) и `AnswerApi` для подачи и бота |
+| `AnswerRules.ts` | `answerKey` — ключ вопроса (NFKC, без шума и пунктуации, слова по алфавиту), проверка полей |
+| `AnswerRepository.ts` | таблица `answers`, upsert по `(userId, key)` |
+| `AnswerTypes.ts` | `AnswerApi` (`listForUser`, `upsert`), `Answer`, `answerOrigins` |
+| **applications/** | подача, [applications.md](applications.md) |
+| `ApplicationRoutes.ts`, `ApplicationController.ts` | `/api/applications`, `/api/applications/:id`, `…/:id/submit`, `/api/questions/:id/answer` |
+| `ApplicationService.ts` | `fillNext` (To Apply → агент → попытка), `submit` (после ✅, затем JT), `reject`, `answerQuestion`, повтор отметки в JT, лимиты |
+| `ApplicationRules.ts` | кандидаты Easy Apply, промпт агента с экранированием, схема ответа, исходы → статусы, бюджет за сутки |
+| `ApplicationRepository.ts` | таблицы `applications` и `questions`, всегда по владельцу вакансии |
+| `ApplicationContracts.ts` | порты `ApplyAgent` (агент) и `ApplyBrowser` (lock), настройки подачи |
+| `ApplicationTypes.ts` | `ApplicationApi` для бота и CLI, статусы, отчёты |
+| **schedules/** | расписание бота, [telegram.md](telegram.md); HTTP-маршрутов нет |
+| `ScheduleService.ts` | расписания владельца (создать или заменить, вкл/выкл, удалить, ближайший запуск) и история `task_runs` |
+| `ScheduleRules.ts` | задачи `collect`/`score`/`cycle`/`apply`, флаги задачи, 5 полей cron, часовой пояс по умолчанию |
+| `ScheduleRepository.ts` | таблицы `schedules` и `task_runs` |
+| `ScheduleTypes.ts` | порт `CronCalendar` (`check`, `next`), его реализует плагин `cron.ts` |
 
 ### server/plugins — техника
 
 | Файл | За что отвечает |
 | --- | --- |
-| `environment.ts` | читает `../.env`; `ollamaConfigFromEnv`, `jobTrackerConfigFromEnv` |
+| `environment.ts` | читает `../.env`; `ollamaConfigFromEnv`, `jobTrackerConfigFromEnv`, `claudeAgentConfigFromEnv`, `applySettingsFromEnv` |
 | `database.ts` | Prisma Client для SQLite из `DATABASE_URL` |
 | `infrastructure.ts` | Prisma, часы и генератор ID для веб-сервера |
 | `browser-broker.ts` | клиент брокера agent Chromium (только чтение) |
 | `http.ts` | fetch с таймаутом, User-Agent и повторами для источников |
 | `ollama.ts` | клиент Ollama `/api/chat`: JSON-схема, `think: false`, проверка обрезки, один повтор |
-| `job-tracker.ts` | клиент AI API JT: Bearer-токен, ETag, пачки, оценки; без повторов |
+| `job-tracker.ts` | клиент AI API JT: Bearer-токен, ETag, пачки, оценки, To Apply, отметка APPLIED (`markApplied`: 404/409 — результат, не ошибка); без повторов |
+| `claude-agent.ts` | запуск `claude -p` на DeepSeek с Playwright MCP: аргументы, таймаут, токены и стоимость ([agent-runner.md](agent-runner.md)) |
+| `agent-guard-rules.ts` | чистые правила хука агента `guardDecision`: что запрещено в `fill` и `submit` |
+| `browser-lock.ts` | файловая блокировка agent Chromium `server/data/browser.lock` («браузер занят: …») |
+| `telegram.ts` | клиент Bot API на fetch: `getUpdates`, `sendMessage`, `editMessageText`, `answerCallbackQuery`; повтор по `retry_after` на 429; токена нет в ошибках |
+| `cron.ts` | `CronCalendar` на croner: проверка выражения и часового пояса, следующий запуск |
 | `passwords.ts` | хеширование паролей (scrypt) |
 | `client.ts` | раздача собранного Vue-клиента |
 | `system-routes.ts` | `GET /api/health`: API и БД живы |
@@ -334,12 +379,15 @@ JT сам проверяет повторы: по нормализованном
 
 | Файл | За что отвечает |
 | --- | --- |
-| `create-application.ts` | все сервисы веб-сервера: users, jobs, searches, trackers |
-| `register-domain-routes.ts` | регистрирует маршруты четырёх HTTP-доменов |
+| `create-application.ts` | все сервисы веб-сервера: users, jobs, searches, trackers, answers, applications |
+| `register-domain-routes.ts` | регистрирует маршруты шести HTTP-доменов |
+| `create-applications.ts` | подача: плагин агента как `ApplyAgent` (настройки читаются при первом запуске), lock браузера, путь резюме, сборка для CLI и бота |
 | `create-collector.ts` | сборщик для CLI: `SearchService` + `JobService` + брокер; `pingBrowser` — жив ли брокер |
 | `create-searches.ts` | `SearchService` с источниками, браузером и HTTP-клиентом |
 | `create-scorer.ts` | оценщик для CLI: `ScoringService` + `TrackerService` + Ollama; ошибки Ollama «сервер/HTTP» → `ScoringModelUnavailableError` |
 | `create-trackers.ts` | `TrackerService` с клиентом JT или без него (`null` — «не настроен») |
+| `create-answers.ts` | банк ответов для CLI: `AnswerService` и поиск активного пользователя по email |
+| `create-bot.ts` | Telegram-бот: jobs, searches, answers, schedules, applications, сборщик и оценщик на каждый запуск, lock браузера, владелец бота |
 | `create-user-administration.ts` | сервис пользователей для `user:create` |
 
 Остальное в `framework`: `core` (Actor, ошибки, роли, часы), `http` (схема ошибки), `generator`
@@ -352,7 +400,16 @@ JT сам проверяет повторы: по нормализованном
 | `collect.ts` | `npm run collect` | сбор вакансий |
 | `score.ts` | `npm run score` | оценка и отправка в JT |
 | `cycle.ts` | `npm run cycle` | сбор → оценка → JT одной командой |
-| `pipeline-cli.ts` | — | общий разбор флагов и печать отчётов для `collect`, `score` и `cycle` |
+| `pipeline-cli.ts` | — | общий разбор флагов и печать отчётов для `collect`, `score`, `cycle` и бота |
+| `pipeline-tasks.ts` | — | общие прогоны `collectJobs`, `scoreOwners`, `runCycle` для CLI и бота |
+| `bot.ts` | `npm run bot` | Telegram-бот: long polling, расписание, задачи |
+| `bot-commands.ts` | — | разбор команд и кнопок бота, тексты ответов |
+| `bot-runtime.ts` | — | `TaskRunner` (одна задача за раз), `Scheduler` (таймер расписания), `TelegramBot` (команды) |
+| `answers.ts` | `npm run answers` | банк ответов: `list`, `set`, `delete` |
+| `apply.ts` | `npm run apply` | подача: заполнить (`--limit`, `--job`), `--list`, `--submit`, `--reject`, `--answer` |
+| `apply-cli.ts` | — | разбор аргументов и печать для `apply` |
+| `answers-cli.ts` | — | разбор аргументов и печать для `answers` |
+| `agent-guard.ts` | — | хук PreToolUse агента подачи (вызывает `claude`, не человек) |
 | `browser-check.ts` | `npm run browser:check` | проверка брокера и входа в LinkedIn |
 | `create-user.ts` | `npm run user:create` | создать пользователя (из `dist`, нужен build) |
 | `check-architecture.ts` | `npm run architecture` | проверка границ доменов |
@@ -402,6 +459,15 @@ JT — отдельное приложение (свой репозиторий,
 | `OLLAMA_NUM_CTX` | `8192` | контекст на запрос (вывод ограничен 1024 токенами внутри кода) |
 | `OLLAMA_TIMEOUT_MS` | `120000` | таймаут одного запроса к модели |
 | `JOB_TRACKER_URL`, `JOB_TRACKER_TOKEN` | пусто | JT; пока хотя бы одно пусто, интеграция выключена, а `npm run score` не запускается |
+| `APPLY_TIMEOUT_MS` | `600000` | предел одного запуска агента подачи |
+| `DEEPSEEK_SETTINGS` | `~/.config/deepseek/claude-settings.json` | настройки `claude` для DeepSeek (ключ внутри; не выводить) |
+| `PLAYWRIGHT_MCP_URL` | `http://127.0.0.1:8931/mcp` | Playwright MCP агента |
+| `AGENT_CWD` | `/srv/agent-files/agent-run` | cwd `claude` агента и `files/` с копиями для загрузки (вне `/home`: MCP видит только `/srv/agent-files`) |
+| `DEEPSEEK_PRICE_INPUT`, `_CACHE_READ`, `_OUTPUT` | пусто | цены DeepSeek, USD за 1M токенов; без них агент не создаётся |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | пусто | бот job-autopilot ([telegram.md](telegram.md)); без них `npm run bot` не стартует; бот отвечает только этому чату |
+| `BOT_USER` | пусто | email владельца, от имени которого работает бот; пусто — единственный активный пользователь |
+| `SCHEDULE_TIMEZONE` | `Europe/Dublin` | часовой пояс новых расписаний |
+| `BOT_SCHEDULED_REPORT` | `changes` | отчёт после планового запуска: `changes` — при новых queued или ошибках, `always` — всегда |
 
 **Ollama и модели.** Ollama работает системным сервисом (`systemctl status ollama`) на `OLLAMA_URL`,
 модель должна быть скачана: `ollama pull qwen3.5:4b`.
@@ -414,19 +480,15 @@ JT — отдельное приложение (свой репозиторий,
 | --- | --- |
 | 1. Сбор (LinkedIn) | ✅ работает; нет удобного заведения поисков из терминала и второго источника |
 | 2. Отбор (qwen по профилю JT) + передача в JT | ✅ код и тесты готовы, `npm run cycle` объединяет этапы 1–2; проверено на 17 живых вакансиях (выбрана `qwen3.5:4b`, порог 50); ⏳ проверка на ~50 |
-| 3. Подача по одной вакансии | 📝 DeepSeek + Playwright MCP, «стоп перед Submit» |
-| 4. Telegram и банк ответов | 📝 |
-| 5. Расписание и автоподача | 📝 systemd timer, лимиты, окно ~1 час |
+| 3. Подача по одной вакансии | ✅ код и тесты на фейках: `npm run apply`, DeepSeek + Playwright MCP, «стоп перед Submit», отправка после ✅, отметка в JT; ⏳ живая проверка на 5 вакансиях |
+| 4. Telegram и банк ответов | ✅ код и тесты: бот `npm run bot` (запуск, `/stop`, статус, поиски, queued, банк ответов, `/run apply`, ✅/❌, вопросы агента реплаем); ⏳ живая проверка |
+| 5. Расписание и автоподача | ✅ расписание `collect`/`score`/`cycle`/`apply` в боте (cron, вкл/выкл), лимиты подачи; 📝 автоподача без ✅ |
 | 6. Веб-интерфейс | 📝 по желанию; страница «Вакансии» пока пустая |
 
 Чек-листы — в [guide.md](guide.md#6-дорожная-карта).
 
 Открытые вопросы:
 
-- **Откуда подача берёт вакансии.** Человек ведёт To Apply в JT, поэтому подаче логично брать список
-  из JT, а не из `queued` в SQLite. Тогда статусы `applying`/`applied` придётся сверять с JT.
-- **Правила JT придётся менять.** Сейчас AI API JT только принимает вакансии и оценки; для подачи
-  понадобятся отметка о подаче и, возможно, новые scopes.
 - **Связка пользователей JT ↔ autopilot.** Сейчас один токен в `.env` и совпадение email — это
   один пользователь. Для нескольких пользователей нужен токен на пользователя.
 - **systemd.** Таймер для `npm run cycle`, окно запуска и блокировка общей вкладки браузера от

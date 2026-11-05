@@ -1,6 +1,7 @@
 import type { SearchFieldsInput } from '../src/searches/SearchRules.js';
 import type { SearchRunReport, SearchStopReason } from '../src/searches/SearchService.js';
 import type { ScoringLine, ScoringReport } from '../src/scoring/ScoringService.js';
+import type { PipelineJob } from '../src/jobs/JobTypes.js';
 
 /**
  * Shared flags and printing of the collect, score and cycle scripts. Pure: parses already split
@@ -11,7 +12,7 @@ import type { ScoringLine, ScoringReport } from '../src/scoring/ScoringService.j
 
 export const collectOptions = {
   user: { type: 'string' }, source: { type: 'string' }, query: { type: 'string' }, location: { type: 'string' },
-  include: { type: 'string' }, exclude: { type: 'string' },
+  include: { type: 'string' }, exclude: { type: 'string' }, 'easy-apply': { type: 'boolean' },
   'dry-run': { type: 'boolean' }, 'max-minutes': { type: 'string', default: '60' }, help: { type: 'boolean' },
 } as const;
 
@@ -22,7 +23,7 @@ export const scoreOptions = {
 
 type Raw = string | undefined;
 export type CollectValues = Readonly<{
-  user?: Raw; source?: Raw; query?: Raw; location?: Raw; include?: Raw; exclude?: Raw;
+  user?: Raw; source?: Raw; query?: Raw; location?: Raw; include?: Raw; exclude?: Raw; 'easy-apply'?: boolean | undefined;
 }>;
 export type ScoreValues = Readonly<{
   limit?: Raw; model?: Raw; threshold?: Raw; 'dry-run'?: boolean | undefined; 'no-push'?: boolean | undefined;
@@ -30,7 +31,10 @@ export type ScoreValues = Readonly<{
 
 const words = (value: Raw): string[] | null => value?.split(',').map((word) => word.trim()).filter(Boolean) ?? null;
 
-/** Ad hoc search when any search flag is given; null means "run the saved searches". */
+/**
+ * Ad hoc search when any search flag is given; null means "run the saved searches".
+ * --easy-apply alone does not make a search ad hoc: with saved searches it narrows this run only.
+ */
 export function adHocSearch(values: CollectValues): SearchFieldsInput | null {
   const adHoc = [values.source, values.query, values.location, values.include, values.exclude].some((value) => value !== undefined);
   if (!adHoc) return null;
@@ -40,6 +44,7 @@ export function adHocSearch(values: CollectValues): SearchFieldsInput | null {
   return {
     source: values.source, keywords: values.query, location: values.location ?? null,
     includeTitle: words(values.include), excludeTitle: words(values.exclude),
+    ...(values['easy-apply'] ? { easyApplyOnly: true } : {}),
   };
 }
 
@@ -70,6 +75,15 @@ export function scoreSettings(values: ScoreValues): ScoreSettings {
   };
 }
 
+// ── Stop wording ──
+
+/** How a stopped run is described: the CLI names Ctrl+C and --max-minutes, the bot /stop and its time limit. */
+export type StopWording = Readonly<{ collect: string; score: string }>;
+export const cliStopWording: StopWording = {
+  collect: 'остановлен (Ctrl+C или --max-minutes)',
+  score: 'остановлен по Ctrl+C или по времени',
+};
+
 // ── Collection report ──
 
 export const stopReasons: Record<SearchStopReason, string> = {
@@ -80,13 +94,15 @@ export const stopReasons: Record<SearchStopReason, string> = {
   error: 'ошибка',
 };
 
-export function searchReportLines(report: SearchRunReport, dryRun: boolean): string[] {
+const stopReason = (reason: SearchStopReason, wording: StopWording): string => (reason === 'aborted' ? wording.collect : stopReasons[reason]);
+
+export function searchReportLines(report: SearchRunReport, dryRun: boolean, wording: StopWording = cliStopWording): string[] {
   const saved = dryRun ? 'не записано (--dry-run)' : `записано ${report.created}, дублей ${report.duplicates}`;
   return [
     `${report.source} «${report.query.keywords}»${report.query.location ? ` (${report.query.location})` : ''}`,
     `  страниц ${report.pages}, карточек ${report.seen}, новых ${report.fresh}, `
       + `из них отсеяно по названию ${report.filtered}; ${saved}, некорректных ${report.invalid}`,
-    `  остановка: ${stopReasons[report.stopped]}${report.error ? ` — ${report.error}` : ''}`,
+    `  остановка: ${stopReason(report.stopped, wording)}${report.error ? ` — ${report.error}` : ''}`,
   ];
 }
 
@@ -108,7 +124,7 @@ export function scoringLine(line: ScoringLine): string {
 export const profileSkip = (report: ScoringReport): string =>
   report.error?.code === 'TRACKER_NOT_LINKED' ? 'не привязан к Job-Tracker' : report.error?.message ?? 'профиль недоступен';
 
-export function scoringSummaryLines(report: ScoringReport, push: boolean): string[] {
+export function scoringSummaryLines(report: ScoringReport, push: boolean, wording: StopWording = cliStopWording): string[] {
   const { counts } = report;
   const profile = report.profile ? `профиль rev ${report.profile.revision}${report.profile.fromCache ? ' (из кеша: Job-Tracker недоступен)' : ''}` : 'профиля нет';
   const speed = report.secondsPerJob === null ? '' : `; ~${report.secondsPerJob} с на вакансию, токены ${report.promptTokens}/${report.evalTokens}`;
@@ -117,7 +133,7 @@ export function scoringSummaryLines(report: ScoringReport, push: boolean): strin
     `  модель ${report.model}, ${profile}, порог ${report.threshold}`,
     `  queued ${counts.queued}, rejected ${counts.rejected}, skipped ${counts.skipped}, ошибок ${counts.errors}${changed}${speed}`,
   ];
-  if (report.stopped === 'aborted') lines.push('  остановлен по Ctrl+C или по времени');
+  if (report.stopped === 'aborted') lines.push(`  ${wording.score}`);
   if (report.stopped === 'model_unavailable') lines.push(`  остановлен: модель недоступна — ${report.error?.message}`);
   if (report.dryRun) return [...lines, '  не записано (--dry-run), в Job-Tracker не отправлено'];
   if (!push) return [...lines, '  Job-Tracker: не отправлялось (--no-push)'];
@@ -144,19 +160,19 @@ export type CycleScore = Readonly<{
 
 const sum = <T>(items: readonly T[], value: (item: T) => number) => items.reduce((total, item) => total + value(item), 0);
 
-function collectSummary(stage: CycleStage<CycleCollect>): string {
+function collectSummary(stage: CycleStage<CycleCollect>, wording: StopWording): string {
   if (!stage.ran) return `сбор: пропущен — ${stage.reason}`;
   const { reports, dryRun } = stage.result;
   if (!reports.length) return 'сбор: включённых сохранённых поисков нет';
   const stops = new Map<SearchStopReason, number>();
   for (const report of reports) stops.set(report.stopped, (stops.get(report.stopped) ?? 0) + 1);
-  const stopped = [...stops].map(([reason, count]) => `${stopReasons[reason]} ×${count}`).join(', ');
+  const stopped = [...stops].map(([reason, count]) => `${stopReason(reason, wording)} ×${count}`).join(', ');
   const saved = dryRun ? 'не записано (--dry-run)' : `записано ${sum(reports, (report) => report.created)}`;
   return `сбор: поисков ${reports.length}, новых ${sum(reports, (report) => report.fresh)}, `
     + `отсеяно по названию ${sum(reports, (report) => report.filtered)}, ${saved}; остановка: ${stopped}`;
 }
 
-function scoreSummary(stage: CycleStage<CycleScore>): string[] {
+function scoreSummary(stage: CycleStage<CycleScore>, wording: StopWording): string[] {
   if (!stage.ran) return [`отбор: пропущен — ${stage.reason}`];
   const { reports, skippedOwners } = stage.result;
   const count = (key: keyof ScoringReport['counts']) => sum(reports, (report) => report.counts[key]);
@@ -165,7 +181,7 @@ function scoreSummary(stage: CycleStage<CycleScore>): string[] {
     : '';
   const unavailable = reports.find((report) => report.stopped === 'model_unavailable');
   const aborted = reports.some((report) => report.stopped === 'aborted');
-  const stop = unavailable ? `; остановлен: модель недоступна — ${unavailable.error?.message}` : aborted ? '; остановлен по Ctrl+C или по времени' : '';
+  const stop = unavailable ? `; остановлен: модель недоступна — ${unavailable.error?.message}` : aborted ? `; ${wording.score}` : '';
   return [`отбор: queued ${count('queued')}, rejected ${count('rejected')}, skipped ${count('skipped')}, `
     + `ошибок ${count('errors')}${skipped}${stop}`];
 }
@@ -185,6 +201,23 @@ function trackerSummary(stage: CycleStage<CycleScore>): string {
     + (errors.length ? `; ошибки: ${errors.join('; ')}` : '');
 }
 
-export function cycleSummaryLines(collect: CycleStage<CycleCollect>, score: CycleStage<CycleScore>): string[] {
-  return ['Итог цикла:', ...[collectSummary(collect), ...scoreSummary(score), trackerSummary(score)].map((line) => `  ${line}`)];
+export function cycleSummaryLines(
+  collect: CycleStage<CycleCollect>, score: CycleStage<CycleScore>, wording: StopWording = cliStopWording,
+): string[] {
+  return ['Итог цикла:', ...[collectSummary(collect, wording), ...scoreSummary(score, wording), trackerSummary(score)].map((line) => `  ${line}`)];
+}
+
+// ── Short results for the bot and the run history ──
+
+/** Jobs that went to queued in this run, across owners. */
+export const queuedCount = (score: CycleStage<CycleScore>): number =>
+  score.ran ? sum(score.result.reports, (report) => report.counts.queued) : 0;
+
+/** Scoring errors and stops on an unavailable model, across owners. */
+export const scoringProblems = (score: CycleStage<CycleScore>): number =>
+  score.ran ? sum(score.result.reports, (report) => report.counts.errors + (report.stopped === 'model_unavailable' ? 1 : 0)) : 0;
+
+/** One line per queued job: score, title, company, link. */
+export function queuedLines(jobs: readonly Pick<PipelineJob, 'score' | 'title' | 'company' | 'url'>[]): string[] {
+  return jobs.map((job) => `${job.score ?? '—'} ${jobName(job)}\n   ${job.url}`);
 }

@@ -1,4 +1,5 @@
-import { jobTrackerConfigFromEnv } from './plugins/environment.js';
+import { applySettingsFromEnv, claudeAgentConfigFromEnv, jobTrackerConfigFromEnv } from './plugins/environment.js';
+import { applySettings, claudeApplyAgent } from './framework/composition/create-applications.js';
 import { createJobTrackerClient } from './plugins/job-tracker.js';
 import { buildServer } from './app.js';
 
@@ -16,6 +17,7 @@ const trackerConfig = jobTrackerConfigFromEnv();
 const server = await buildServer({
   databaseUrl,
   tracker: trackerConfig && createJobTrackerClient(trackerConfig),
+  apply: { agent: claudeApplyAgent(() => claudeAgentConfigFromEnv()), settings: applySettings(applySettingsFromEnv()) },
   logger: true,
   auth: {
     secret,
