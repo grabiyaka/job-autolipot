@@ -45,13 +45,16 @@ export function claudeApplyAgent(config: () => ClaudeAgentConfig): ApplyAgent {
         return {
           output: result.output, sessionId: result.sessionId, turns: result.turns, durationMs: result.durationMs,
           tokens: result.tokens, costMicros: result.costMicros, runDir: result.runDir,
-          toolCalls: result.guardLog.map((entry) => ({ tool: entry.tool, decision: entry.decision, ...(entry.reason ? { reason: entry.reason } : {}) })),
+          toolCalls: result.guardLog.map((entry) => ({
+            tool: entry.tool, decision: entry.decision, ...(entry.reason ? { reason: entry.reason } : {}),
+            ...(entry.submit !== undefined ? { submit: entry.submit } : {}),
+          })),
         };
       } catch (error) {
         if (error instanceof AgentError) {
           throw new ApplyAgentError(error.message, { tokens: error.tokens ?? noSpend.tokens, costMicros: error.costMicros ?? 0 }, {
             ...(error.sessionId ? { sessionId: error.sessionId } : {}), ...(error.runDir ? { runDir: error.runDir } : {}),
-            toolCalls: error.guardLog.map((entry) => ({ tool: entry.tool, decision: entry.decision })),
+            toolCalls: error.guardLog.map((entry) => ({ tool: entry.tool, decision: entry.decision, ...(entry.submit !== undefined ? { submit: entry.submit } : {}) })),
             unavailable: error instanceof AgentUnavailableError,
           });
         }

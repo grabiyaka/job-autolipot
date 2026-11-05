@@ -48,7 +48,8 @@ model AuthSession {
 
 // ───────────── Вакансии ─────────────
 
-/// found → scored → rejected | queued → applying → applied | needs_input | failed | skipped
+/// found → scored → rejected | queued → applying → applied | needs_input | failed | skipped | manual;
+/// manual — подать может только сам пользователь (аккаунт, капча, Workday…), затем «✅ подал сам» → applied.
 enum JobStatus {
   found
   scored
@@ -59,6 +60,7 @@ enum JobStatus {
   needs_input
   failed
   skipped
+  manual
 }
 
 /// Найденная вакансия пользователя. URL канонизируется модулем источника и вместе с userId
@@ -174,7 +176,8 @@ model SearchRun {
 }
 
 /// running → ready (ждёт ✅) → submitted (отправлено, JT ещё не отмечен) → applied;
-/// running → needs_input | failed | skipped; ready → skipped (❌) | failed.
+/// running → needs_input | failed | skipped | manual; ready → skipped (❌) | failed | needs_input | manual;
+/// manual → submitted («✅ подал сам») | skipped (❌).
 enum ApplicationStatus {
   running
   ready
@@ -183,6 +186,13 @@ enum ApplicationStatus {
   needs_input
   failed
   skipped
+  manual
+}
+
+/// Где форма: диалог LinkedIn Easy Apply или сайт компании / ATS.
+enum ApplicationKind {
+  easy_apply
+  external
 }
 
 /// Одна попытка подачи на вакансию.
@@ -190,6 +200,11 @@ model Application {
   id               String            @id @default(uuid())
   jobId            String
   status           ApplicationStatus @default(running)
+  kind             ApplicationKind   @default(easy_apply)
+  /// Страница формы, на которой агент остановился (для external — откуда начинает submit_fresh, для manual — ссылка пользователю).
+  applyUrl         String?
+  /// `channel` отметки в Job-Tracker: linkedin_easy_apply | company_site | company_site_manual; задаётся при отправке.
+  trackerChannel   String?
   /// Сессия агента (DeepSeek) для `--resume`.
   sessionId        String?
   screenshotBefore String?

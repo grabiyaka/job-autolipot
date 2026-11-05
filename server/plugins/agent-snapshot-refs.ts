@@ -17,8 +17,10 @@ export type RefIndex = Readonly<{
   /** origin + path of the page the refs belong to; refs restart on another page. */
   page: string | null;
   refs: Readonly<Record<string, RefInfo>>;
+  /** https hosts of every page seen in this attempt; the guard lets the browser go back to them. */
+  hosts: readonly string[];
 }>;
-export const emptyRefIndex: RefIndex = { page: null, refs: {} };
+export const emptyRefIndex: RefIndex = { page: null, refs: {}, hosts: [] };
 
 /** Descendant text kept per element; enough to see a button label. */
 const maxText = 300;
@@ -100,14 +102,27 @@ export function responsePage(text: string): string | null {
 /** Tools after which old refs no longer apply: a new document or another tab. */
 const resetTools = new Set(['browser_navigate', 'browser_tabs', 'browser_navigate_back']);
 
+/** Lower-case host of an https page, else null. */
+function pageHost(page: string | null): string | null {
+  if (page === null) return null;
+  try {
+    const url = new URL(page);
+    return url.protocol === 'https:' && url.hostname ? url.hostname.toLowerCase() : null;
+  } catch { return null; }
+}
+
 /**
  * Index after one tool response: refs of another page are dropped, then the refs of this response
- * are added; for a ref seen again the latest value wins.
+ * are added; for a ref seen again the latest value wins. The https host of the page is remembered
+ * (e.g. the company site that LinkedIn's Apply button led to).
  */
 export function updateRefIndex(index: RefIndex, tool: string, response: unknown): RefIndex {
   const text = responseText(response);
   const page = responsePage(text);
   const reset = resetTools.has(tool.replace(/^mcp__playwright__/, '')) || (page !== null && index.page !== null && page !== index.page);
   const base = reset ? {} : index.refs;
-  return { page: page ?? index.page, refs: { ...base, ...parseSnapshotRefs(text) } };
+  const known = Array.isArray(index.hosts) ? index.hosts : [];
+  const host = pageHost(page);
+  const hosts = host === null || known.includes(host) ? known : [...known, host];
+  return { page: page ?? index.page, refs: { ...base, ...parseSnapshotRefs(text) }, hosts };
 }

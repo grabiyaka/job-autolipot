@@ -4,11 +4,16 @@
  */
 
 /**
- * running → ready (filled, waits for ✅) → submitted (sent on LinkedIn, JT not marked yet) → applied;
- * running → needs_input | failed | skipped; ready → skipped (❌) | failed.
+ * running → ready (filled, waits for ✅) → submitted (sent, JT not marked yet) → applied;
+ * running → needs_input | failed | skipped | manual; ready → skipped (❌) | failed | needs_input | manual;
+ * manual (only the owner can apply: an account, a captcha, Workday…) → submitted («✅ подал сам») | skipped (❌).
  */
-export const applicationStatuses = ['running', 'ready', 'submitted', 'applied', 'needs_input', 'failed', 'skipped'] as const;
+export const applicationStatuses = ['running', 'ready', 'submitted', 'applied', 'needs_input', 'failed', 'skipped', 'manual'] as const;
 export type ApplicationStatus = typeof applicationStatuses[number];
+
+/** Where the form is: LinkedIn's Easy Apply dialog, or a company site / applicant tracking system. */
+export const applicationKinds = ['easy_apply', 'external'] as const;
+export type ApplicationKind = typeof applicationKinds[number];
 
 /** open → answered (the owner replied, the answer went to the bank) → used (a later fill started with it). */
 export const questionStatuses = ['open', 'answered', 'used'] as const;
@@ -37,6 +42,12 @@ export type ApplicationView = Readonly<{
   company: string;
   url: string;
   status: ApplicationStatus;
+  kind: ApplicationKind;
+  /**
+   * The form page the agent stopped on: an external ✅ starts there (submit_fresh), a `manual` attempt
+   * gives it to the owner. Null until the agent answered.
+   */
+  applyUrl: string | null;
   /** What the agent filled in (from its answer); empty until it answered. */
   filled: FilledField[];
   /** The agent's summary in Russian, or the reason of the outcome. */
@@ -79,6 +90,8 @@ export type FillReport = Readonly<{
   /** Attempts of this run that wait for ✅, and the questions this run opened. */
   ready: ApplicationView[];
   questions: QuestionView[];
+  /** Attempts of this run the owner has to apply to by hand (`manual`, link in `applyUrl`). */
+  manual: ApplicationView[];
 }>;
 
 export type FillOptions = Readonly<{
@@ -107,19 +120,28 @@ export type AnswerReport = Readonly<{
   requeued: boolean;
 }>;
 
-export type PendingView = Readonly<{ ready: ApplicationView[]; questions: QuestionView[] }>;
+/** `manual`: attempts whose job is still waiting for the owner to apply by hand (link in `applyUrl`). */
+export type PendingView = Readonly<{ ready: ApplicationView[]; questions: QuestionView[]; manual: ApplicationView[] }>;
 
 /** Applying as the bot, the CLI and HTTP see it; every call acts for the owner and hides others' records (404). */
 export interface ApplicationApi {
   /** Fills the next To Apply jobs one by one and stops before Submit. Throws when the browser is busy. */
   fillNext(ownerId: string, options?: FillOptions): Promise<FillReport>;
-  /** Sends an attempt waiting for ✅ (`ready`), then marks the job applied in Job-Tracker. */
+  /**
+   * Sends an attempt waiting for ✅ (`ready`), then marks the job applied in Job-Tracker. Easy Apply
+   * resumes the fill session; an external form is filled again from `applyUrl` and sent (submit_fresh).
+   */
   submit(ownerId: string, applicationId: string, signal?: AbortSignal): Promise<SubmitReport>;
-  /** ❌: the attempt and the job become skipped, «отклонено вручную». */
+  /**
+   * «✅ подал сам» for a `manual` attempt: the job becomes applied and Job-Tracker is marked with
+   * `channel: company_site_manual`. Other statuses — 409.
+   */
+  markManualApplied(ownerId: string, applicationId: string): Promise<SubmitReport>;
+  /** ❌ (from ready, needs_input or manual): the attempt and the job become skipped, «отклонено вручную». */
   reject(ownerId: string, applicationId: string): Promise<ApplicationView>;
   /** Saves the answer to the bank; once all questions of the attempt are answered, the job is queued again. */
   answerQuestion(ownerId: string, questionId: string, answer: string, origin: 'manual' | 'telegram'): Promise<AnswerReport>;
-  /** Attempts waiting for ✅ and open questions. */
+  /** Attempts waiting for ✅, open questions and attempts to apply to by hand. */
   pending(ownerId: string): Promise<PendingView>;
   /** Remembers the Telegram message a question was sent in, so a reply to it finds the question. */
   setQuestionMessage(ownerId: string, questionId: string, messageId: string): Promise<void>;

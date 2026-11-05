@@ -8,13 +8,13 @@ export { jobStatuses } from './JobTypes.js';
 export type { ApplyJobStatus, JobDecision, JobInput, JobScore, JobStatus, PipelineJob } from './JobTypes.js';
 
 const jobDecisions: readonly JobDecision[] = ['queued', 'rejected', 'skipped'];
-const applyStatuses: readonly ApplyJobStatus[] = ['queued', 'applying', 'applied', 'needs_input', 'failed', 'skipped'];
+const applyStatuses: readonly ApplyJobStatus[] = ['queued', 'applying', 'applied', 'needs_input', 'failed', 'skipped', 'manual'];
 
 /**
  * A job in one of these statuses, rejected after a score (by the model), or already sent to Job-Tracker
  * makes a same-named job a repeat. A job rejected by the title filter has no score and is not a twin.
  */
-const twinStatuses: readonly JobStatus[] = ['scored', 'queued', 'applying', 'applied', 'needs_input'];
+const twinStatuses: readonly JobStatus[] = ['scored', 'queued', 'applying', 'applied', 'needs_input', 'manual'];
 
 /** A person may only queue, reject or skip; other statuses come from the scorer and the applier. */
 export const userJobStatuses = ['queued', 'rejected', 'skipped'] as const;
@@ -25,10 +25,12 @@ const transitions: Readonly<Record<JobStatus, readonly JobStatus[]>> = {
   scored: ['scored', 'queued', 'rejected', 'skipped'],
   rejected: ['scored', 'queued', 'skipped'],
   queued: ['applying', 'rejected', 'skipped'],
-  applying: ['applied', 'needs_input', 'failed'],
+  applying: ['applied', 'needs_input', 'failed', 'manual'],
   needs_input: ['queued', 'applying', 'skipped'],
   failed: ['queued', 'skipped'],
   skipped: ['queued'],
+  // The owner applies by hand («✅ подал сам»), gives it up, or it is filled again with --job.
+  manual: ['applied', 'queued', 'skipped'],
   applied: [],
 };
 

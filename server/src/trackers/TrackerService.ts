@@ -23,7 +23,7 @@ export type TrackerStatus = Readonly<{
 export type TrackerProfileView = Readonly<{ markdown: string; revision: number; fetchedAt: string; fromCache: boolean }>;
 
 const evaluatorName = 'job-autopilot';
-/** How applications appear in JT: `Applied by <agentName> via <channel>.` */
+/** How applications appear in JT: `Applied by <agentName> via <channel>.`; the default channel. */
 export const trackerApplyChannel = 'linkedin_easy_apply';
 export const trackerAgentName = 'job-autopilot/deepseek';
 /** Pages of 100: the To Apply list is read whole, but never more than this. */
@@ -259,11 +259,11 @@ export class TrackerService implements TrackerApi, TrackerApplyApi {
     }
   }
 
-  async markApplied(ownerId: string, trackerJobId: string, details: Readonly<{ appliedAt: Date; note?: string }>): Promise<TrackerMarkResult> {
+  async markApplied(ownerId: string, trackerJobId: string, details: Readonly<{ appliedAt: Date; note?: string; channel?: string }>): Promise<TrackerMarkResult> {
     const client = this.requireClient();
     await this.requireLinked(client, ownerId);
     return client.markApplied(trackerJobId, {
-      appliedAt: details.appliedAt.toISOString(), channel: trackerApplyChannel, agentName: trackerAgentName,
+      appliedAt: details.appliedAt.toISOString(), channel: details.channel || trackerApplyChannel, agentName: trackerAgentName,
       ...(details.note ? { note: details.note.slice(0, 20_000) } : {}),
     });
   }

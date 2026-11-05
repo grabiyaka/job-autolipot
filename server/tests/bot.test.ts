@@ -7,11 +7,12 @@ import { acquireBrowserLock } from '../plugins/browser-lock.js';
 import { cronCalendar } from '../plugins/cron.js';
 import { createPrismaClient } from '../plugins/database.js';
 import type { InlineKeyboard, TelegramClient, TelegramUpdate } from '../plugins/telegram.js';
-import { parseCallback, parseCommand, parseOptions } from '../scripts/bot-commands.js';
+import { externalMessageMax, fieldValueMax, manualMessage, parseCallback, parseCommand, parseOptions, readyMessage } from '../scripts/bot-commands.js';
 import { Scheduler, shouldReport, TelegramBot } from '../scripts/bot-runtime.js';
 import type { BotOwner, BotServices, TaskOutcome, Timer } from '../scripts/bot-runtime.js';
 import type { PipelineOutput } from '../scripts/pipeline-tasks.js';
 import type { Answer } from '../src/answers/AnswerTypes.js';
+import type { ApplicationApi, ApplicationView } from '../src/applications/ApplicationTypes.js';
 import type { JobStatus } from '../src/jobs/JobTypes.js';
 import { ScheduleRepository } from '../src/schedules/ScheduleRepository.js';
 import { ScheduleService } from '../src/schedules/ScheduleService.js';
@@ -69,9 +70,59 @@ describe('bot commands', () => {
     expect(parseCallback('q:del:abc')).toEqual({ kind: 'search', action: 'delete', id: 'abc' });
     expect(parseCallback('a:ok:app-1')).toEqual({ kind: 'application', action: 'submit', id: 'app-1' });
     expect(parseCallback('a:no:app-1')).toEqual({ kind: 'application', action: 'reject', id: 'app-1' });
+    expect(parseCallback('a:me:app-1')).toEqual({ kind: 'application', action: 'appliedByHand', id: 'app-1' });
     expect(parseCallback('a:del:app-1')).toBeNull();
     expect(parseCallback('x')).toBeNull();
     expect(parseCallback(undefined)).toBeNull();
+  });
+});
+
+const attemptView = (overrides: Partial<ApplicationView> = {}): ApplicationView => ({
+  id: 'app-1', jobId: 'j1', jobTitle: 'Node <Dev>', company: 'Acme & Co', url: 'https://www.linkedin.com/jobs/view/1/',
+  status: 'ready', kind: 'external', applyUrl: 'https://boards.greenhouse.io/acme/jobs/1?x="1"', filled: [], summary: null, note: null,
+  inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, costMicros: 0, startedAt: '', finishedAt: null, ...overrides,
+});
+
+describe('apply messages', () => {
+  it('an external form shows the host as a link and the filled fields; Easy Apply stays as it was', () => {
+    const external = readyMessage(attemptView({ filled: [{ field: 'Email', value: 'a@b.test' }, { field: 'Why <us>?', value: 'Fit & growth' }] }));
+    expect(external.text).toContain('🌐 <b>Внешняя форма заполнена, ждёт ✅</b>: Node &lt;Dev&gt; — Acme &amp; Co');
+    expect(external.text).toContain('Форма: <a href="https://boards.greenhouse.io/acme/jobs/1?x=&quot;1&quot;">boards.greenhouse.io</a>');
+    expect(external.text).toContain('• Email: a@b.test\n• Why &lt;us&gt;?: Fit &amp; growth');
+    expect(external.text).toContain('✅ — агент заполнит форму заново и отправит (пара минут)');
+    expect(external.keyboard).toEqual([[{ text: '✅ отправить', data: 'a:ok:app-1' }, { text: '❌ отказаться', data: 'a:no:app-1' }]]);
+
+    const easy = readyMessage(attemptView({ kind: 'easy_apply', filled: [{ field: 'Email', value: 'a@b.test' }] }));
+    expect(easy.text).toMatch(/^📝 <b>Заполнено, ждёт ✅<\/b>/);
+    expect(easy.text).not.toContain('<a href');
+  });
+
+  it('cuts long values and a long field list to one message', () => {
+    const filled = Array.from({ length: 60 }, (_, index) => ({ field: `Question ${index}`, value: 'x'.repeat(400) }));
+    const { text } = readyMessage(attemptView({ filled, summary: 'Всё заполнено.' }));
+    expect(text.length).toBeLessThanOrEqual(externalMessageMax);
+    expect(text).toContain(`• Question 0: ${'x'.repeat(fieldValueMax - 1)}…\n`);
+    expect(text).not.toContain('x'.repeat(fieldValueMax));
+    const shown = text.split('\n').filter((line) => line.startsWith('• ')).length;
+    expect(shown).toBeGreaterThan(5);
+    expect(text).toContain(`…и ещё ${60 - shown} `);
+    expect(text).toContain('Всё заполнено.');
+    expect(text.trimEnd().endsWith('❌ — отказаться.')).toBe(true);
+  });
+
+  it('a manual job: reason, link and the «подал сам» / «не подаю» buttons', () => {
+    const { text, keyboard } = manualMessage(attemptView({
+      status: 'manual', applyUrl: 'https://acme.wd3.myworkdayjobs.com/en/job/1', note: 'подать вручную: Workday <аккаунт>',
+    }));
+    expect(text).toContain('🖐 <b>Подать вручную</b>: Node &lt;Dev&gt; — Acme &amp; Co');
+    expect(text).toContain('Причина: подать вручную: Workday &lt;аккаунт&gt;');
+    expect(text).toContain('Ссылка: <a href="https://acme.wd3.myworkdayjobs.com/en/job/1">acme.wd3.myworkdayjobs.com</a>');
+    expect(keyboard).toEqual([[{ text: '✅ подал сам', data: 'a:me:app-1' }, { text: '❌ не подаю', data: 'a:no:app-1' }]]);
+    const uuid = '0f8b6c1e-3a7d-4c2b-9e51-7a2d4c6b8e90';
+    for (const button of manualMessage(attemptView({ id: uuid, status: 'manual' })).keyboard[0]!) {
+      expect(Buffer.byteLength(button.data)).toBeLessThanOrEqual(64);
+      expect(parseCallback(button.data)).toMatchObject({ kind: 'application', id: uuid });
+    }
   });
 });
 
@@ -159,6 +210,8 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
   let trackerConfigured: boolean;
   let applyTracker: FakeApplyTracker;
   let applyAgent: FakeAgent;
+  let submitGate: ReturnType<typeof gate> | null;
+  let applicationCalls: string[];
 
   beforeAll(async () => {
     testDatabase = createTestDatabase();
@@ -199,7 +252,25 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     applyTracker = new FakeApplyTracker();
     applyAgent = new FakeAgent();
     const applier = createTestApplier(database, { tracker: applyTracker, agent: applyAgent, lockPath, now: () => now });
-    const counts = { found: 3, scored: 0, rejected: 5, queued: 2, applying: 0, applied: 0, needs_input: 0, failed: 0, skipped: 1 } as Record<JobStatus, number>;
+    const counts = { found: 3, scored: 0, rejected: 5, queued: 2, applying: 0, applied: 0, needs_input: 0, failed: 0, skipped: 1, manual: 1 } as Record<JobStatus, number>;
+    submitGate = null;
+    applicationCalls = [];
+    // The real service, with the calls the bot makes written down and ✅ held open by `submitGate`.
+    const real: ApplicationApi = applier.applications;
+    const applications: BotServices['applications'] = {
+      fillNext: (ownerId, options) => real.fillNext(ownerId, options),
+      submit: async (ownerId, id, signal) => {
+        applicationCalls.push(`submit ${id}`);
+        if (submitGate) await submitGate.promise;
+        return real.submit(ownerId, id, signal);
+      },
+      markManualApplied: (ownerId, id) => { applicationCalls.push(`manual ${id}`); return real.markManualApplied(ownerId, id); },
+      reject: (ownerId, id) => { applicationCalls.push(`reject ${id}`); return real.reject(ownerId, id); },
+      answerQuestion: (...args) => real.answerQuestion(...args),
+      pending: (ownerId) => real.pending(ownerId),
+      setQuestionMessage: (...args) => real.setQuestionMessage(...args),
+      findQuestionByMessage: (...args) => real.findQuestionByMessage(...args),
+    };
     const services: BotServices = {
       jobs: {
         summary: async () => ({ total: 11, counts }),
@@ -237,7 +308,7 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
         },
       },
       schedules,
-      applications: applier.applications,
+      applications,
       pipeline: {
         get trackerConfigured() { return trackerConfigured; },
         lockBrowser: (task) => acquireBrowserLock({ task: `bot:${task}`, path: lockPath }),
@@ -504,12 +575,84 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     });
     expect(telegram.texts().at(-1)).toMatch(/Не понял/);
     await say('/pending');
-    expect(telegram.texts().at(-1)).toBe('Ничего не ждёт ✅ и открытых вопросов нет.');
+    expect(telegram.texts().at(-1)).toBe('Ничего не ждёт ✅ или подачи вручную, открытых вопросов нет.');
+  });
+
+  it('external forms: the field summary, ✅ fills again and sends, a manual job gets «подал сам» / «не подаю»', async () => {
+    const row = (id: string, number: number) => ({ id, url: linkedinUrl(number), title: `Job ${id}`, company: 'Acme', source: 'linkedin' });
+    applyTracker.toApply = [row('jt-x', 4000000201), row('jt-m', 4000000202), row('jt-n', 4000000203)];
+    const greenhouse = 'https://boards.greenhouse.io/acme/jobs/201';
+    applyAgent.steps.push(
+      agentAnswer('ready_to_submit', { kind: 'external', applyUrl: greenhouse, filled: [{ field: 'First name', value: 'Illia' }, { field: 'Resume', value: 'cv.pdf' }] }),
+      agentAnswer('manual', { kind: 'external', applyUrl: 'https://acme.wd3.myworkdayjobs.com/job/202', summary: 'Workday: нужен аккаунт' }),
+      agentAnswer('manual', { kind: 'external', applyUrl: 'https://acme.wd3.myworkdayjobs.com/job/203', summary: 'капча' }),
+    );
+    await say('/run apply');
+    await bot.settled();
+
+    const report = telegram.texts()[1]!;
+    expect(report).toContain('manual: Job jt-m — Acme. подать вручную');
+    expect(report).toContain('Подать вручную: 2 — ссылки ниже');
+    const form = telegram.sent.find((item) => item.text?.startsWith('🌐'))!;
+    expect(form.text).toContain('Форма: <a href="https://boards.greenhouse.io/acme/jobs/201">boards.greenhouse.io</a>');
+    expect(form.text).toContain('• First name: Illia\n• Resume: cv.pdf');
+    const manual = telegram.sent.filter((item) => item.text?.startsWith('🖐'));
+    expect(manual).toHaveLength(2);
+    expect(manual[0]!.text).toContain('Workday: нужен аккаунт');
+    expect(manual[0]!.text).toContain('<a href="https://acme.wd3.myworkdayjobs.com/job/202">acme.wd3.myworkdayjobs.com</a>');
+
+    // /pending sends the form and both manual jobs again, with their buttons.
+    telegram.sent.length = 0;
+    await say('/pending');
+    expect(telegram.sent.map((item) => item.keyboard?.[0]?.map((button) => button.data.slice(0, 4)))).toEqual([
+      ['a:ok', 'a:no'], ['a:me', 'a:no'], ['a:me', 'a:no'],
+    ]);
+
+    // ✅ on the external form: an answer at once, the submit runs as a task /status shows, then the result.
+    submitGate = gate();
+    applyAgent.steps.push(agentAnswer('submitted', { kind: 'external', applyUrl: greenhouse, summary: 'страница «Thank you»' }));
+    const [ok] = form.keyboard![0]!;
+    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-x', data: ok!.data, message: { message_id: 70, chat: { id: chatId } } } });
+    expect(telegram.sent.at(-2)).toEqual({ method: 'answerCallbackQuery', callbackText: 'Заполняю заново и отправляю…' });
+    expect(telegram.sent.at(-1)).toMatchObject({ method: 'editMessageText', text: expect.stringMatching(/^⏳ Заполняю заново и отправляю: Job jt-x — Acme/) });
+    expect(telegram.sent.at(-1)!.keyboard).toBeUndefined();
+    await new Promise((resolve) => setImmediate(resolve));
+    await say('/status');
+    expect(telegram.texts().at(-1)).toContain('<b>Сейчас</b>: submit: Job jt-x — Acme (внешняя форма: заполняю заново и отправляю), запущено 0 мин назад');
+    submitGate.open();
+    await bot.settled();
+    expect(applicationCalls.filter((call) => call.startsWith('submit'))).toHaveLength(1);
+    expect(applyAgent.requests.at(-1)).toMatchObject({ mode: 'submit_fresh', startUrl: greenhouse });
+    expect(telegram.texts().at(-1)).toMatch(/^✅ <b>Job jt-x<\/b> — Acme: /);
+    expect((await database.job.findFirstOrThrow({ where: { trackerId: 'jt-x' } })).status).toBe('applied');
+
+    // «✅ подал сам» on the first manual job; «❌ не подаю» on the second.
+    const [appliedByHand] = manual[0]!.keyboard![0]!;
+    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-me', data: appliedByHand!.data, message: { message_id: 71, chat: { id: chatId } } } });
+    expect(applicationCalls.at(-1)).toMatch(/^manual /);
+    expect(telegram.sent.at(-3)).toEqual({ method: 'editMessageText', chatId, text: '🖐 Подано вручную: Job jt-m — Acme' });
+    expect(telegram.sent.at(-2)).toEqual({ method: 'answerCallbackQuery', callbackText: 'Отмечено' });
+    expect(telegram.texts().at(-1)).toMatch(/^✅ <b>Job jt-m<\/b> — Acme: /);
+    expect(applyTracker.marks.find((mark) => mark.jobId === 'jt-m')?.input.channel).toBe('company_site_manual');
+    expect((await database.job.findFirstOrThrow({ where: { trackerId: 'jt-m' } })).status).toBe('applied');
+
+    // Pressed again: the attempt is not manual any more, the button says so.
+    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-me2', data: appliedByHand!.data, message: { message_id: 71, chat: { id: chatId } } } });
+    expect(telegram.sent.at(-1)).toMatchObject({ method: 'answerCallbackQuery', callbackText: expect.stringMatching(/только для попытки manual/) });
+
+    const [, giveUp] = manual[1]!.keyboard![0]!;
+    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-no', data: giveUp!.data, message: { message_id: 72, chat: { id: chatId } } } });
+    expect(applicationCalls.at(-1)).toMatch(/^reject /);
+    expect(telegram.sent.at(-2)).toMatchObject({ method: 'editMessageText', text: '❌ Отклонено: Job jt-n — Acme' });
+    expect(await database.job.findFirstOrThrow({ where: { trackerId: 'jt-n' } })).toMatchObject({ status: 'skipped', why: 'отклонено вручную' });
+
+    await say('/pending');
+    expect(telegram.texts().at(-1)).toBe('Ничего не ждёт ✅ или подачи вручную, открытых вопросов нет.');
   });
 
   it('shows status, queued and the answer bank, and adds an answer from Telegram', async () => {
     await say('/status');
-    expect(telegram.texts()[0]).toContain('<b>Вакансии</b>: всего 11 — found 3, queued 2, rejected 5, skipped 1');
+    expect(telegram.texts()[0]).toContain('<b>Вакансии</b>: всего 11 — found 3, queued 2, rejected 5, skipped 1, manual 1');
     expect(telegram.texts()[0]).toContain('пока не было');
     await say('/queued');
     expect(telegram.texts()[1]).toMatch(/1\. <b>88<\/b> Node &lt;Engineer&gt; — Acme\n {3}https:\/\/www\.linkedin\.com\/jobs\/view\/1\//);

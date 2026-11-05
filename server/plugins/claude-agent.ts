@@ -4,7 +4,7 @@ import { constants } from 'node:fs';
 import { access, chmod, copyFile, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentFilesDir, allowedTools, disallowedTools, guardLogFile } from './agent-guard-rules.js';
+import { agentFilesDir, allowedTools, disallowedTools, guardLogFile, httpsHost } from './agent-guard-rules.js';
 import type { ApplyMode } from './agent-guard-rules.js';
 
 /**
@@ -14,7 +14,7 @@ import type { ApplyMode } from './agent-guard-rules.js';
  *
  * Safety does not rely on the prompt: only the Playwright tools in `allowedTools` are allowed, and
  * every call first goes through the PreToolUse hook scripts/agent-guard.ts (rules in
- * agent-guard-rules.ts), which gets the mode through APPLY_MODE.
+ * agent-guard-rules.ts), which gets the mode through APPLY_MODE and the start URL through APPLY_START_URL.
  *
  * Two folders:
  * - `agentCwd` (by default /srv/agent-files/agent-run): cwd of `claude`, with its .claude/settings.json
@@ -67,6 +67,12 @@ export type AgentRunRequest = Readonly<{
   /** JSON schema of the answer (--json-schema). */
   schema: object;
   mode: ApplyMode;
+  /**
+   * https URL the agent starts from (a job page outside LinkedIn, or the external form for
+   * submit_fresh). The guard lets the browser open its host (APPLY_START_URL); the caller still puts
+   * it into the prompt. Without it only LinkedIn, known ATS and hosts reached by clicks are allowed.
+   */
+  startUrl?: string;
   /** Continue this session (--resume), e.g. submit after fill. */
   resumeSessionId?: string;
   signal?: AbortSignal;
@@ -76,7 +82,9 @@ export type AgentTokens = Readonly<{ input: number; cacheRead: number; output: n
 
 /** One tool call as the guard saw it. */
 export type GuardLogEntry = Readonly<{
-  at: string; mode?: string; tool: string; args: unknown; decision: 'allow' | 'deny'; reason?: string;
+  at: string; mode?: string; tool: string; page?: string | null; args: unknown; decision: 'allow' | 'deny'; reason?: string;
+  /** The allowed send click of the attempt (submit modes); absent in entries of older guards. */
+  submit?: boolean;
 }>;
 
 export type AgentRunResult = Readonly<{
@@ -380,6 +388,9 @@ export function createClaudeAgent(config: ClaudeAgentConfig): ClaudeAgent {
     config,
     async run(request) {
       if (request.prompt.startsWith('-')) throw new Error('Промпт агента не может начинаться с «-»: claude примет его за флаг');
+      if (request.startUrl !== undefined && httpsHost(request.startUrl) === null) {
+        throw new Error(`Стартовый адрес агента должен быть https URL, получено «${request.startUrl}»`);
+      }
       try {
         await access(config.settingsPath, constants.R_OK);
       } catch {
@@ -400,12 +411,16 @@ export function createClaudeAgent(config: ClaudeAgentConfig): ClaudeAgent {
       await writeFile(systemPromptFile, request.systemPrompt);
 
       // Hooks inherit this env. CLAUDECODE is dropped so a run started from a Claude session is not taken as nested.
-      const { CLAUDECODE: _nested, ...env } = process.env;
+      // APPLY_START_URL of the parent is dropped too: only this run's startUrl may widen the allowed hosts.
+      const { CLAUDECODE: _nested, APPLY_START_URL: _inherited, ...env } = process.env;
       let exit: Exit;
       try {
         exit = await runProcess(config.claudeBin, agentArgs({ mcpConfig, systemPromptFile }, config, request), {
           cwd: config.agentCwd,
-          env: { ...env, APPLY_MODE: request.mode, APPLY_GUARD_DIR: runDir, APPLY_UPLOAD_DIR: uploadDir },
+          env: {
+            ...env, APPLY_MODE: request.mode, APPLY_GUARD_DIR: runDir, APPLY_UPLOAD_DIR: uploadDir,
+            ...(request.startUrl !== undefined ? { APPLY_START_URL: request.startUrl } : {}),
+          },
           timeoutMs: config.timeoutMs,
           killGraceMs: config.killGraceMs ?? 5000,
           signal: request.signal,

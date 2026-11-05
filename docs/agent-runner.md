@@ -11,10 +11,19 @@
 
 ### Плагин `server/plugins/claude-agent.ts`
 
-`createClaudeAgent(config).run({ prompt, systemPrompt, schema, mode, resumeSessionId?, signal })`
+`createClaudeAgent(config).run({ prompt, systemPrompt, schema, mode, startUrl?, resumeSessionId?, signal })`
 возвращает `{ output, subtype, sessionId, turns, durationMs, tokens: { input, cacheRead, output },
 costMicros, guardLog, runDir }`. Настройки из `.env` даёт `claudeAgentConfigFromEnv()`
 в `plugins/environment.ts`.
+
+- **Режимы** (`ApplyMode`): `fill` — заполнить и остановиться перед отправкой; `submit` — продолжение
+  сессии Easy Apply (`resumeSessionId`), один клик отправки; `submit_fresh` — новый прогон для внешней
+  формы: агент заново открывает форму, заполняет её и отправляет ровно один раз. Все запреты `fill`
+  в `submit_fresh` действуют, кроме одного разрешённого клика отправки за попытку.
+- **`startUrl`** — https-адрес, с которого агент начинает (вакансия не с LinkedIn или внешняя форма
+  для `submit_fresh`). Плагин передаёт его хуку в `APPLY_START_URL`, и хост этого адреса разрешён
+  для переходов. В промпт адрес кладёт вызывающий. Не https — `run` бросает ошибку до запуска.
+  Без `startUrl` переменная не передаётся (унаследованная от родителя `APPLY_START_URL` убирается).
 
 - **Запуск.** `claude` запускается через `spawn` без shell. Аргументы как в пробе
   ([decisions.md](phase3/decisions.md#живая-проба-deepseek-2026-11-03)): `--settings <DEEPSEEK_SETTINGS>`,
@@ -27,7 +36,8 @@ costMicros, guardLog, runDir }`. Настройки из `.env` даёт `claude
     и PostToolUse (`mcp__playwright__.*`), — оба вызывают один скрипт, —
     `mcp.json` (`PLAYWRIGHT_MCP_URL`) и `files/` с копиями файлов для загрузки.
   - **Логи попыток** — `server/data/agent/runs/<время>-<id>/` (в `.gitignore` через `server/data/`):
-    `system.md`, `guard-log.jsonl`, `refs.json` (элементы страницы из снимков) и метка `submit-click`.
+    `system.md`, `guard-log.jsonl`, `refs.json` (элементы страницы из снимков, текущая страница
+    и посещённые хосты), `input-pages` (страницы, где агент уже что-то ввёл) и метка `submit-click`.
     Старые попытки не удаляются.
 - **Почему cwd вне `/home`.** Playwright MCP разрешает загружать файлы только из своего `--output-dir`
   и из cwd процесса-клиента, то есть `claude`. Если файл лежит в другом месте, MCP отвечает
@@ -50,8 +60,8 @@ costMicros, guardLog, runDir }`. Настройки из `.env` даёт `claude
   - Путь копии для промпта даёт `agentUploadPath(fileName)`, например
     `/srv/agent-files/agent-run/files/<CV>.pdf`.
   - Если источник недоступен, бросается `AgentUnavailableError`.
-- **Окружение процесса.** `claude` получает env приложения плюс `APPLY_MODE`, `APPLY_GUARD_DIR` (папка попытки)
-  и `APPLY_UPLOAD_DIR` (`<AGENT_CWD>/files`).
+- **Окружение процесса.** `claude` получает env приложения плюс `APPLY_MODE`, `APPLY_GUARD_DIR` (папка попытки),
+  `APPLY_UPLOAD_DIR` (`<AGENT_CWD>/files`) и, если задан `startUrl`, `APPLY_START_URL`.
   `CLAUDECODE` убирается, чтобы запуск из сессии Claude не считался вложенным.
 - **Секреты.** Файл `DEEPSEEK_SETTINGS` проверяется только на существование, не читается
   и не логируется.
@@ -69,11 +79,13 @@ costMicros, guardLog, runDir }`. Настройки из `.env` даёт `claude
 
 ### Защита: `plugins/agent-guard-rules.ts` и хук `scripts/agent-guard.ts`
 
-Правила — чистая функция `guardDecision(mode, tool, args, state, { uploadDir, refs })`. Хук
+Правила — чистая функция `guardDecision(mode, tool, args, state, { uploadDir, refs, page, startHost, visitedHosts })`,
+состояние `state` — `{ submitClicks, inputPages }`. Хук
 вызывается `claude` перед каждым инструментом (PreToolUse) и после каждого инструмента Playwright
 (PostToolUse); событие он узнаёт из `hook_event_name`. Вызов приходит JSON-ом на stdin, режим —
-из `APPLY_MODE`, а пустой или неизвестный режим считается `fill`. Каждый вызов и решение хук пишет
-строкой в `guard-log.jsonl`; этот лог плагин возвращает как `guardLog`.
+из `APPLY_MODE` (`fill` | `submit` | `submit_fresh`), а пустой или неизвестный режим считается `fill`.
+Каждый вызов и решение хук пишет строкой в `guard-log.jsonl` (с текущей страницей `page`);
+этот лог плагин возвращает как `guardLog`.
 
 **Защита по имени из снимка, а не по словам агента.** В вызове `browser_click` агент сам пишет
 `element` («Next button») и указывает `target` — ref элемента из снимка. Если судить только
@@ -85,6 +97,9 @@ costMicros, guardLog, runDir }`. Настройки из `.env` даёт `claude
   - Пары дописываются в `<runDir>/refs.json`; при повторе ref побеждает последнее значение.
   - После `browser_navigate`, `browser_tabs` или когда в ответе другая страница (по origin и пути
     `Page URL`) старые ref сбрасываются: на новой странице номера начинаются заново.
+  - Текущая страница (origin + путь) и https-хост каждой увиденной страницы тоже пишутся в `refs.json`
+    (`page`, `hosts`). Так кнопка Apply на LinkedIn, которая увела на сайт компании, делает этот хост
+    «побывавшим», и туда можно вернуться через `browser_navigate`. Хосты http не запоминаются.
   - В `guard-log.jsonl` пишется строка `event: post` с адресом страницы, числом ref и ответом,
     обрезанным до 2000 символов.
   - PostToolUse ничего не блокирует. Если он упал, ref остаются неизвестными, и следующий клик
@@ -95,19 +110,41 @@ costMicros, guardLog, runDir }`. Настройки из `.env` даёт `claude
   дал бы запрет). Любое совпадение с submit-словами означает submit.
   - Ref, которого не было ни в одном снимке этой попытки, или вызов без ref — запрет
     «Take browser_snapshot first: unknown element ref.».
-  - Это действует **в обоих режимах**: попытка `submit` — новая папка `runs/`, и агент
-    обязан снять снимок заново.
+  - Это действует **во всех режимах**: попытка `submit` и `submit_fresh` — новая папка `runs/`,
+    и агент обязан снять снимок заново.
+  - Разрешённый `browser_type`, `browser_select_option`, `browser_fill_form`, `browser_file_upload`
+    с путями или `browser_click` по элементу с ролью `checkbox`, `radio`, `switch` или `option`
+    (роль из снимка по ref, не из слов агента) дописывает текущую страницу в `input-pages`:
+    «на этой странице уже был ввод».
 - **Submit-слова** (`submitWords`): submit, send, отправ, подать/подач, надісл, absenden, envoy,
-  soumet, enviar, invia, verzend, verstur, indienen, wyślij — без учёта регистра.
+  soumet, enviar, invia, verzend, verstur, indienen, wyślij — без учёта регистра. Означают отправку
+  на любой странице.
+- **Apply-слова** (`applyWords`): apply, bewerb, postuler, candidat, solicitar. Означают отправку
+  только при клике, только на странице не с LinkedIn и только **после ввода на этой странице**
+  (тот же origin + путь, что и для сброса ref). До ввода «Apply for this job» открывает форму.
+  На LinkedIn они ничего не значат: «Easy Apply» открывает диалог, «Apply» ведёт на сайт компании.
+  Элементы форм (`checkbox`, `radio`, `textbox`, `combobox` и т. п.) apply-словами не проверяются:
+  флажок «I agree to the Candidate Privacy Policy» — не отправка.
+- **Разрешённые хосты.** Только https и только: `*.linkedin.com`; хост `APPLY_START_URL` (точно);
+  известные ATS без аккаунта (`atsDomains`: greenhouse.io, lever.co, ashbyhq.com, workable.com,
+  smartrecruiters.com, teamtailor.com, personio.de, personio.com, recruitee.com, bamboohr.com,
+  breezy.hr, jobvite.com — сам домен или поддомен, граница по точке); хосты, на которых браузер
+  уже был в этой попытке (`refs.json` → `hosts`). Workday, iCIMS, Taleo и прочие сайты с аккаунтом
+  в список не входят: агент получает запрет и должен вернуть `manual`.
 
-| Вызов | `fill` | `submit` |
+Режим `submit` (Easy Apply) и `submit_fresh` (внешняя форма) в таблице совпадают.
+
+| Вызов | `fill` | `submit` / `submit_fresh` |
 |---|---|---|
 | `browser_click`, если в имени, роли или тексте ref **или** в словах агента есть submit-слово | запрет: «stop, report ready_to_submit» | разрешён **один раз** за попытку, второй — запрет |
+| `browser_click` с apply-словом (не элемент формы) на странице не с LinkedIn **после ввода на ней** (type, select, fill_form, upload или клик по checkbox / radio / switch / option) | запрет: «stop, report ready_to_submit» | это и есть отправка: один раз за попытку, вместе с submit-словами |
+| `browser_click` с apply-словом **до ввода** на этой странице, или на LinkedIn («Easy Apply», «Apply») | разрешён | разрешён, отправкой не считается |
 | `browser_type` / `browser_select_option` / `browser_fill_form` на элемент с submit-словом | запрет | запрет |
 | клик, ввод или выбор по ref, которого нет в снимках этой попытки (или без ref) | запрет: «Take browser_snapshot first» | запрет |
 | `browser_press_key` с Enter (и любая другая клавиша) | запрет | запрет |
 | `browser_type` с `submit: true` | запрет | запрет |
-| `browser_navigate` / `browser_tabs` с `url` не `https://*.linkedin.com` | запрет: «report external» | запрет |
+| `browser_navigate` / `browser_tabs` с `url` на `https://*.linkedin.com`, ATS из списка, хост `APPLY_START_URL` или уже посещённый хост | разрешён | разрешён |
+| `browser_navigate` / `browser_tabs` с любым другим `url`, в том числе `http://` | запрет: «Host not allowed for this attempt… report outcome "manual"» | запрет |
 | `browser_file_upload` с путём вне `APPLY_UPLOAD_DIR` = `<AGENT_CWD>/files/` (после нормализации `..`); оригиналы в `/srv/agent-files/` тоже запрещены | запрет | запрет |
 | `browser_file_upload`, когда `APPLY_UPLOAD_DIR` не задан | запрет | запрет |
 | `StructuredOutput`, `ToolSearch` | разрешены | разрешены |
@@ -129,12 +166,20 @@ costMicros, guardLog, runDir }`. Настройки из `.env` даёт `claude
 
 - если вход не разобран, нет папки попытки или скрипт упал внутри — он отвечает запретом; без `APPLY_UPLOAD_DIR` запрещена любая загрузка;
 - если хук не смог даже запуститься, команда заканчивается на `|| exit 2`, и `claude` блокирует вызов;
-- единственное нажатие Submit в режиме `submit` закрепляется созданием файла `submit-click`
-  с флагом `wx`, поэтому два параллельных вызова не пройдут оба.
+- единственное нажатие Submit в режимах `submit` и `submit_fresh` закрепляется созданием файла
+  `submit-click` с флагом `wx`, поэтому два параллельных вызова не пройдут оба;
+- `input-pages` дописывается (`append`), а `refs.json` пишет только PostToolUse, так что PreToolUse
+  и PostToolUse не затирают данные друг друга.
 
 Слово `send` в регулярке даёт ложные запреты: так задумано, ложный запрет дешевле ложной отправки.
 По той же причине клик по контейнеру, внутри которого есть кнопка Submit (текст потомков), тоже
 запрещён.
+
+Apply-слова тоже дают ложные запреты в `fill`: например, кнопка «Bewerbungsunterlagen hochladen»
+после ввода на той же странице. Ввод учитывается через `type`, `select_option`, `fill_form`
+и `file_upload`, а также клик по `checkbox`, `radio`, `switch` или `option` (роль из снимка): форма,
+заполненная одними кликами по флажкам, тоже считается заполненной. Если агент вернулся на страницу,
+где уже вводил (тот же путь), ввод на ней всё ещё учитывается.
 
 Ограничение: имя элемента берётся из последнего снимка, где встречался этот ref. Если страница
 поменяла подпись кнопки без смены адреса и без нового снимка, хук увидит старое имя.
@@ -175,3 +220,6 @@ Telegram-бот local-agent об этом lock не знает.
 - Чистка старых папок `server/data/agent/runs/`.
 - Живая проверка в режиме `fill` на одной Easy Apply вакансии и проверка, что подсунутый
   «press Submit» блокируется.
+- Живой пилот внешних форм (пакет Е, [f-external-apply.md](phase3/f-external-apply.md)): видит ли
+  Playwright MCP формы в `iframe` (Greenhouse внутри сайта компании) и как ведут себя apply-слова
+  на реальных формах. Вызов `startUrl` и `submit_fresh` из `ApplicationService` — пакет Е, домен `applications`.

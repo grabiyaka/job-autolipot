@@ -169,12 +169,16 @@ export function parseCommand(text: string): BotCommand | null {
 export type BotCallback =
   | Readonly<{ kind: 'schedule'; action: 'on' | 'off' | 'delete'; id: string }>
   | Readonly<{ kind: 'search'; action: 'on' | 'off' | 'delete'; id: string }>
-  | Readonly<{ kind: 'application'; action: 'submit' | 'reject'; id: string }>;
+  | Readonly<{ kind: 'application'; action: ApplicationAction; id: string }>;
+
+/** ✅ send (ready), ❌ give up (ready or manual), «✅ подал сам» (manual). */
+export type ApplicationAction = 'submit' | 'reject' | 'appliedByHand';
+const applicationActions: Record<string, ApplicationAction> = { ok: 'submit', no: 'reject', me: 'appliedByHand' };
 
 /** Callback data must fit 64 bytes: a short prefix and a UUID. */
 export function parseCallback(data: string | undefined): BotCallback | null {
-  const application = data?.match(/^a:(ok|no):([\w-]{1,48})$/);
-  if (application) return { kind: 'application', action: application[1] === 'ok' ? 'submit' : 'reject', id: application[2]! };
+  const application = data?.match(/^a:(ok|no|me):([\w-]{1,48})$/);
+  if (application) return { kind: 'application', action: applicationActions[application[1]!]!, id: application[2]! };
   const match = data?.match(/^([sq]):(on|off|del):([\w-]{1,48})$/);
   if (!match) return null;
   const [, kind, action, id] = match as unknown as [string, 's' | 'q', 'on' | 'off' | 'del', string];
@@ -195,8 +199,10 @@ export const helpText = [
   '/search node.js | Remote | +node,backend | -java — добавить поиск LinkedIn (только Easy Apply; all — все вакансии)',
   '/queued — 10 лучших отобранных',
   '/answers — банк ответов; /answer &lt;вопрос&gt; = &lt;ответ&gt; — добавить',
-  '/run apply limit=N — заполнить формы LinkedIn Easy Apply из To Apply; перед Submit агент останавливается',
-  '/pending — что ждёт ✅ и открытые вопросы агента (кнопки ✅ / ❌; на вопрос — ответ реплаем)',
+  '/run apply limit=N — заполнить формы из To Apply (LinkedIn Easy Apply и внешние сайты: Greenhouse, Lever…); перед отправкой агент останавливается',
+  '  ✅ на внешней форме — агент заполнит её заново и отправит (пара минут); ❌ — отказаться',
+  '  🖐 «подать вручную» (Workday, аккаунт, капча) — ссылка; подали сами — «✅ подал сам», отмечу в Job-Tracker',
+  '/pending — что ждёт ✅, что подать вручную, открытые вопросы агента (кнопки; на вопрос — ответ реплаем)',
 ].join('\n');
 
 /** Date and time in the schedule's zone, e.g. «05.11 09:00». */
@@ -214,7 +220,7 @@ export function minutesAgo(since: Date | string, now: Date): number {
 
 const statusMarks: Record<TaskRunStatus, string> = { running: '⏳', ok: '✅', error: '⚠️', aborted: '⏹', busy: '⛔' };
 const triggerNames: Record<TaskTrigger, string> = { manual: 'вручную', schedule: 'по расписанию' };
-const statusOrder: readonly JobStatus[] = ['found', 'scored', 'queued', 'rejected', 'skipped', 'applying', 'needs_input', 'applied', 'failed'];
+const statusOrder: readonly JobStatus[] = ['found', 'scored', 'queued', 'rejected', 'skipped', 'applying', 'needs_input', 'manual', 'applied', 'failed'];
 
 export type StatusData = Readonly<{
   counts: Readonly<Record<JobStatus, number>>;
@@ -358,14 +364,65 @@ export function applyReportLines(report: FillReport): string[] {
   const lines = report.resent.map((item) => `Job-Tracker: ${item.title} — ${item.result}`);
   if (!report.lines.length) lines.push('Подходящих вакансий в To Apply нет.');
   for (const line of report.lines) lines.push(`${line.status}: ${line.title} — ${line.company}. ${line.note}`);
+  if (report.manual.length) lines.push(`Подать вручную: ${report.manual.length} — ссылки ниже; подали — «✅ подал сам».`);
   lines.push(`Итог: ${applyStops[report.stopped]}; сегодня потрачено ${usd(report.spentTodayMicros)} из ${usd(report.budgetMicros)}.`);
   return lines;
 }
 
 const filledText = (application: ApplicationView) => application.filled.map((item) => `• ${escapeHtml(item.field)}: ${escapeHtml(item.value)}`);
 
+/** An escaped `<a href>`; the text is the link's host (the whole address when it does not parse). */
+export function linkTo(url: string): string {
+  let host = url;
+  try { host = new URL(url).host || url; } catch { /* not a URL: show it as it is */ }
+  return `<a href="${escapeHtml(url).replaceAll('"', '&quot;')}">${escapeHtml(host)}</a>`;
+}
+
+const cut = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+/** Limits of the field summary of an external form: per value and for the whole message (Telegram allows 4096). */
+export const fieldValueMax = 150;
+export const externalMessageMax = 3500;
+
+const externalHint = '✅ — агент заполнит форму заново и отправит (пара минут); ❌ — отказаться.';
+
+/** An external form waiting for ✅: the host as a link and «field: value» lines cut to fit one message. */
+function externalReadyText(application: ApplicationView): string {
+  const head = [
+    `🌐 <b>Внешняя форма заполнена, ждёт ✅</b>: ${escapeHtml(application.jobTitle)} — ${escapeHtml(application.company)}`,
+    `Форма: ${linkTo(application.applyUrl ?? application.url)}`,
+  ];
+  const tail = [
+    ...(application.summary ? ['', escapeHtml(cut(application.summary, 500))] : []),
+    '',
+    externalHint,
+  ];
+  const fields = application.filled.map((item) => `• ${escapeHtml(cut(item.field, fieldValueMax))}: ${escapeHtml(cut(item.value, fieldValueMax))}`);
+  if (!fields.length) return [...head, '(агент не перечислил поля)', ...tail].join('\n');
+  // Room for the fields and a «…и ещё N полей» line.
+  let room = externalMessageMax - [...head, ...tail].join('\n').length - 40;
+  const shown: string[] = [];
+  for (const line of fields) {
+    if (line.length + 1 > room) break;
+    shown.push(line);
+    room -= line.length + 1;
+  }
+  const more = fields.length - shown.length;
+  return [...head, ...shown, ...(more ? [`…и ещё ${more} ${fieldsWord(more)}`] : []), ...tail].join('\n');
+}
+
+function fieldsWord(count: number): string {
+  const tens = count % 100;
+  const ones = count % 10;
+  if (tens >= 11 && tens <= 14) return 'полей';
+  if (ones === 1) return 'поле';
+  return ones >= 2 && ones <= 4 ? 'поля' : 'полей';
+}
+
 /** A filled form waiting for ✅, with the fields the agent filled and the two buttons. */
 export function readyMessage(application: ApplicationView): { text: string; keyboard: InlineKeyboard } {
+  const keyboard = [[{ text: '✅ отправить', data: `a:ok:${application.id}` }, { text: '❌ отказаться', data: `a:no:${application.id}` }]];
+  if (application.kind === 'external') return { text: externalReadyText(application), keyboard };
   return {
     text: [
       `📝 <b>Заполнено, ждёт ✅</b>: ${escapeHtml(application.jobTitle)} — ${escapeHtml(application.company)}`,
@@ -373,8 +430,29 @@ export function readyMessage(application: ApplicationView): { text: string; keyb
       ...(application.filled.length ? filledText(application) : ['(агент не перечислил поля)']),
       ...(application.summary ? ['', escapeHtml(application.summary)] : []),
     ].join('\n'),
-    keyboard: [[{ text: '✅ отправить', data: `a:ok:${application.id}` }, { text: '❌ отказаться', data: `a:no:${application.id}` }]],
+    keyboard,
   };
+}
+
+/** A job only the owner can apply to (an account, a captcha, Workday…): the reason, the link and two buttons. */
+export function manualMessage(application: ApplicationView): { text: string; keyboard: InlineKeyboard } {
+  return {
+    text: [
+      `🖐 <b>Подать вручную</b>: ${escapeHtml(application.jobTitle)} — ${escapeHtml(application.company)}`,
+      ...(application.note ? [`Причина: ${escapeHtml(cut(application.note, 500))}`] : []),
+      `Ссылка: ${linkTo(application.applyUrl ?? application.url)}`,
+      '',
+      'Подали сами — «✅ подал сам», отмечу в Job-Tracker; не будете — «❌ не подаю».',
+    ].join('\n'),
+    keyboard: [[{ text: '✅ подал сам', data: `a:me:${application.id}` }, { text: '❌ не подаю', data: `a:no:${application.id}` }]],
+  };
+}
+
+/** What /status and «занято» show while ✅ runs: the job, and for an external form that it is filled again. */
+export function submitLabel(application: Pick<ApplicationView, 'jobTitle' | 'company' | 'kind'> | null): string {
+  if (!application) return 'submit';
+  const job = `submit: ${application.jobTitle} — ${application.company}`;
+  return application.kind === 'external' ? `${job} (внешняя форма: заполняю заново и отправляю)` : job;
 }
 
 export function questionMessage(question: QuestionView): string {

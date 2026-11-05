@@ -1,0 +1,22 @@
+### Page
+- Page URL: https://job-boards.greenhouse.io/acme/jobs/1
+- Page Title: Job Application for Backend Engineer at Acme
+### Snapshot
+```yaml
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - img "Acme logo" [ref=e4]
+  - main [ref=e10]:
+    - heading "Backend Engineer" [level=1] [ref=e11]
+    - button "Apply" [ref=e12] [cursor=pointer]
+    - paragraph [ref=e13]: Dublin, Ireland
+    - group [ref=e20]:
+      - generic [ref=e20a]: First Name*
+      - textbox "First Name" [ref=e21]
+      - generic [ref=e22a]: Email*
+      - textbox "Email" [ref=e22]
+      - combobox "Country" [ref=e23]
+      - button "Attach" [ref=e24] [cursor=pointer]
+    - checkbox "I have read the Candidate Privacy Policy" [ref=e30]
+    - button "Submit application" [ref=e40] [cursor=pointer]
+```

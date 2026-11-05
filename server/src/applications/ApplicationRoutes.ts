@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { errors, errorSchema } from '../../framework/http/error-schema.js';
 import { authenticatedAccess } from '../../middlewares/authenticatedAccess.js';
 import { ApplicationController } from './ApplicationController.js';
-import { applicationStatuses, questionStatuses } from './ApplicationService.js';
+import { applicationKinds, applicationStatuses, questionStatuses } from './ApplicationService.js';
 import type { AnswerInput, ApplicationService } from './ApplicationService.js';
 
 const date = { type: 'string', format: 'date-time' } as const;
@@ -19,7 +19,8 @@ const filledSchema = {
 
 const applicationProperties = {
   id: { type: 'string' }, jobId: { type: 'string' }, jobTitle: { type: 'string' }, company: { type: 'string' }, url: { type: 'string' },
-  status: { type: 'string', enum: applicationStatuses }, filled: filledSchema, summary: nullableText, note: nullableText,
+  status: { type: 'string', enum: applicationStatuses }, kind: { type: 'string', enum: applicationKinds }, applyUrl: nullableText,
+  filled: filledSchema, summary: nullableText, note: nullableText,
   inputTokens: count, cacheReadTokens: count, outputTokens: count, costMicros: count, startedAt: date, finishedAt: nullableDate,
 } as const;
 const applicationSchema = { type: 'object', additionalProperties: false, required: Object.keys(applicationProperties), properties: applicationProperties } as const;
@@ -73,6 +74,14 @@ export function registerApplicationRoutes(server: FastifyInstance, applications:
       params: idParams, response: { 200: submitSchema, ...applyErrors },
     },
   }, controller.submit);
+
+  server.post<{ Params: { id: string } }>('/api/applications/:id/manual-applied', {
+    preHandler: authenticatedAccess,
+    schema: {
+      tags, summary: '«Подал сам»: попытка manual → вакансия applied, отметка в Job-Tracker (channel company_site_manual)',
+      params: idParams, response: { 200: submitSchema, ...applyErrors },
+    },
+  }, controller.manualApplied);
 
   server.post<{ Params: { id: string }; Body: AnswerInput }>('/api/questions/:id/answer', {
     preHandler: authenticatedAccess,

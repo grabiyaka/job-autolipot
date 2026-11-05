@@ -55,6 +55,8 @@ export class FakeAgent implements ApplyAgent {
   requests: ApplyAgentRequest[] = [];
   steps: AgentStep[] = [];
   costMicros = 20_000;
+  /** What the guard saw in each run; a click that was let through makes a failed submit "maybe sent". */
+  toolCalls: ApplyAgentResult['toolCalls'] = [{ tool: 'mcp__playwright__browser_snapshot', decision: 'allow' }];
 
   async run(request: ApplyAgentRequest): Promise<ApplyAgentResult> {
     this.requests.push(request);
@@ -65,7 +67,7 @@ export class FakeAgent implements ApplyAgent {
     return {
       output, sessionId: `session-${this.requests.length}`, turns: 10, durationMs: 1000,
       tokens: { input: 1000, cacheRead: 5000, output: 300 }, costMicros: this.costMicros, runDir: null,
-      toolCalls: [{ tool: 'mcp__playwright__browser_snapshot', decision: 'allow' }],
+      toolCalls: this.toolCalls,
     };
   }
 }

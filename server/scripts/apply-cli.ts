@@ -12,22 +12,26 @@ export type ApplyCommand =
   | Readonly<{ action: 'list'; user: string }>
   | Readonly<{ action: 'submit'; user: string; applicationId: string }>
   | Readonly<{ action: 'reject'; user: string; applicationId: string }>
+  | Readonly<{ action: 'manualApplied'; user: string; applicationId: string }>
   | Readonly<{ action: 'answer'; user: string; questionId: string; answer: string }>;
 
-export const applyUsageHint = 'Использование: npm run apply -- --user <email> [--limit N] [--job <id>] | --list | --submit <id> | --reject <id> | --answer <questionId> "<ответ>"';
+export const applyUsageHint = 'Использование: npm run apply -- --user <email> [--limit N] [--job <id>] | --list | --submit <id> | --reject <id> | --manual-applied <id> | --answer <questionId> "<ответ>"';
 
 export function applyCommand(args: readonly string[]): ApplyCommand {
   const { values, positionals } = parseArgs({
     args: [...args], allowPositionals: true,
     options: {
       user: { type: 'string' }, limit: { type: 'string' }, job: { type: 'string' }, list: { type: 'boolean' },
-      submit: { type: 'string' }, reject: { type: 'string' }, answer: { type: 'string' }, help: { type: 'boolean', short: 'h' },
+      submit: { type: 'string' }, reject: { type: 'string' }, 'manual-applied': { type: 'string' }, answer: { type: 'string' }, help: { type: 'boolean', short: 'h' },
     },
   });
   if (values.help) return { action: 'help' };
   if (!values.user) throw new Error(`Укажите --user. ${applyUsageHint}`);
   const user = values.user;
-  const modes = [values.list && '--list', values.submit && '--submit', values.reject && '--reject', values.answer && '--answer'].filter(Boolean);
+  const manualApplied = values['manual-applied'];
+  const modes = [
+    values.list && '--list', values.submit && '--submit', values.reject && '--reject', manualApplied && '--manual-applied', values.answer && '--answer',
+  ].filter(Boolean);
   if (modes.length > 1) throw new Error(`Можно только одно из ${modes.join(', ')}. ${applyUsageHint}`);
   if (modes.length && (values.limit || values.job)) throw new Error(`--limit и --job — только для заполнения. ${applyUsageHint}`);
   if (values.answer) {
@@ -38,6 +42,7 @@ export function applyCommand(args: readonly string[]): ApplyCommand {
   if (values.list) return { action: 'list', user };
   if (values.submit) return { action: 'submit', user, applicationId: values.submit };
   if (values.reject) return { action: 'reject', user, applicationId: values.reject };
+  if (manualApplied) return { action: 'manualApplied', user, applicationId: manualApplied };
   let limit: number | undefined;
   if (values.limit !== undefined) {
     limit = Number(values.limit);
@@ -69,9 +74,17 @@ export function fillLines(report: FillReport): string[] {
     lines.push('', `Ждёт ✅: ${application.jobTitle} — ${application.company}`, `  ${application.url}`, ...filledLines(application),
       `  отправить: npm run apply -- --user <email> --submit ${application.id}`);
   }
+  for (const application of report.manual) lines.push('', ...manualLines(application));
   for (const question of report.questions) lines.push('', ...questionLines(question));
   lines.push('', `Итог: ${stopWords[report.stopped]}; потрачено сегодня ${usd(report.spentTodayMicros)} из ${usd(report.budgetMicros)}.`);
   return lines;
+}
+
+/** A job only the owner can apply to: the link, the reason and the «подал сам» command. */
+export function manualLines(application: ApplicationView): string[] {
+  return [`Подать вручную: ${application.jobTitle} — ${application.company}`, `  ${application.applyUrl ?? application.url}`,
+    ...(application.note ? [`  ${application.note}`] : []),
+    `  подал сам: npm run apply -- --user <email> --manual-applied ${application.id}`];
 }
 
 export function questionLines(question: QuestionView): string[] {
@@ -85,6 +98,11 @@ export function pendingLines(pending: PendingView): string[] {
   for (const application of pending.ready) {
     lines.push(`  ${application.id}  ${application.jobTitle} — ${application.company}`, `    ${application.url}`,
       ...filledLines(application).map((line) => `  ${line}`));
+  }
+  if (pending.manual.length) lines.push('', 'Подать вручную (затем --manual-applied <id>):');
+  for (const application of pending.manual) {
+    lines.push(`  ${application.id}  ${application.jobTitle} — ${application.company}`, `    ${application.applyUrl ?? application.url}`,
+      ...(application.note ? [`    ${application.note}`] : []));
   }
   lines.push('', pending.questions.length ? 'Открытые вопросы:' : 'Открытых вопросов нет.');
   for (const question of pending.questions) lines.push(`  ${question.id}  ${question.jobTitle} — ${question.company}`, `    ${question.text}`);

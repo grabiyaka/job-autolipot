@@ -148,10 +148,11 @@ export interface TrackerApplyApi {
   /** The owner's whole To Apply list, oldest first (at most 1000 rows). JT failures are thrown as ApplicationError. */
   listToApply(ownerId: string): Promise<TrackerToApplyJob[]>;
   /**
-   * Records in JT that the owner applied to this To Apply row (`channel` linkedin_easy_apply).
+   * Records in JT that the owner applied to this To Apply row. `channel` is free text in JT
+   * (linkedin_easy_apply by default, company_site, company_site_manual).
    * Outages and refusals are thrown as TrackerError, so the caller can retry later.
    */
-  markApplied(ownerId: string, trackerJobId: string, details: Readonly<{ appliedAt: Date; note?: string }>): Promise<TrackerMarkResult>;
+  markApplied(ownerId: string, trackerJobId: string, details: Readonly<{ appliedAt: Date; note?: string; channel?: string }>): Promise<TrackerMarkResult>;
   /** False when JOB_TRACKER_URL / JOB_TRACKER_TOKEN are not set. */
   readonly configured: boolean;
 }

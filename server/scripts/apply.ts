@@ -3,13 +3,16 @@ import { createApplier } from '../framework/composition/create-applications.js';
 import { applySettingsFromEnv, claudeAgentConfigFromEnv, jobTrackerConfigFromEnv } from '../plugins/environment.js';
 import { answerLines, applyCommand, fillLines, pendingLines, submitLines } from './apply-cli.js';
 
-const usage = `Подача на вакансии из Job-Tracker To Apply через агента (LinkedIn Easy Apply). Агент заполняет
-форму и останавливается перед Submit; отправка — только отдельной командой после вашей проверки.
+const usage = `Подача на вакансии из Job-Tracker To Apply через агента: LinkedIn Easy Apply и формы на сайтах компаний / ATS.
+Агент заполняет форму и останавливается перед отправкой; отправка — только отдельной командой после вашей проверки.
+Сайты с аккаунтом или капчей (Workday, iCIMS…) — «подать вручную»: ссылка в --list, после подачи --manual-applied.
 
   npm run apply -- --user me@example.com [--limit N] [--job <id>]   заполнить следующие (по умолчанию APPLY_MAX_PER_RUN)
   npm run apply -- --user me@example.com --list                     что ждёт ✅ и какие вопросы открыты
   npm run apply -- --user me@example.com --submit <applicationId>   отправить заполненную попытку и отметить в Job-Tracker
+                                                                    (внешняя форма заполняется заново и отправляется — ещё один прогон агента)
   npm run apply -- --user me@example.com --reject <applicationId>   отказаться: вакансия skipped («отклонено вручную»)
+  npm run apply -- --user me@example.com --manual-applied <applicationId>   подал сам (попытка manual): applied и отметка в Job-Tracker
   npm run apply -- --user me@example.com --answer <questionId> "<ответ>"   ответ в банк; после последнего — вакансия снова queued
 
 --job: id вакансии здесь или в Job-Tracker; берётся, даже если её нет в To Apply или она failed/skipped.
@@ -45,6 +48,7 @@ async function main(): Promise<void> {
         lines = [`skipped: ${rejected.jobTitle} — ${rejected.company} (отклонено вручную)`];
         break;
       }
+      case 'manualApplied': lines = submitLines(await applications.markManualApplied(owner.id, command.applicationId)); break;
       case 'answer': lines = answerLines(await applications.answerQuestion(owner.id, command.questionId, command.answer, 'manual')); break;
     }
     console.log(lines.join('\n').replaceAll('<email>', owner.email));

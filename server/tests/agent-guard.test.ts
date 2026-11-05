@@ -5,9 +5,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
-  allowedTools, denyReasons, disallowedTools, guardDecision, initialGuardState, isLinkedinUrl, isUploadFile, parseApplyMode, uploadDenyReason,
+  allowedTools, atsDomains, denyReasons, disallowedTools, guardDecision, initialGuardState, isAllowedUrl, isLinkedinUrl, isUploadFile, parseApplyMode,
+  uploadDenyReason,
 } from '../plugins/agent-guard-rules.js';
-import type { ApplyMode } from '../plugins/agent-guard-rules.js';
+import type { ApplyMode, GuardContext, GuardState } from '../plugins/agent-guard-rules.js';
 import { emptyRefIndex, parseSnapshotRefs, responseText, updateRefIndex } from '../plugins/agent-snapshot-refs.js';
 
 const pw = (name: string) => `mcp__playwright__${name}`;
@@ -21,12 +22,16 @@ const refs = {
   e9: button('SUBMIT'), e12: button('Next'), e40: button('Submit application'),
   e50: button('Review'), e51: { role: 'button', name: '', text: 'Submit' }, e52: button('Bewerbung absenden'),
   e53: button('Envoyer la candidature'), e54: { role: 'combobox', name: 'Country code', text: '' },
+  e60: button('Easy Apply to Acme'), e61: { role: 'link', name: 'Apply on company website', text: '' },
 };
-const context = { uploadDir, refs };
+/** A LinkedIn Easy Apply page, no start URL, nothing visited yet. */
+const linkedinPage = 'https://www.linkedin.com/jobs/view/1/';
+const context: GuardContext = { uploadDir, refs, page: linkedinPage, startHost: null, visitedHosts: [] };
 type Expect = 'allow' | string;
-type Row = Readonly<{ name: string; tool: string; args: unknown; fill: Expect; submit: Expect }>;
+/** `fresh` (submit_fresh) defaults to the `submit` column. */
+type Row = Readonly<{ name: string; tool: string; args: unknown; fill: Expect; submit: Expect; fresh?: Expect }>;
 
-/** Every row is checked in both modes with no submit click made yet. */
+/** Every row is checked in all modes on a LinkedIn page with no submit click and no input made yet. */
 const table: Row[] = [
   { name: 'snapshot', tool: pw('browser_snapshot'), args: {}, fill: 'allow', submit: 'allow' },
   { name: 'StructuredOutput (final answer)', tool: 'StructuredOutput', args: { outcome: 'ready_to_submit', summary: 'submit send', filled: [] }, fill: 'allow', submit: 'allow' },
@@ -45,6 +50,8 @@ const table: Row[] = [
   { name: 'agent says Submit on a Next ref', tool: pw('browser_click'), args: { element: 'Submit application', target: 'e12' }, fill: denyReasons.submitInFill, submit: 'allow' },
   { name: 'click Next by target', tool: pw('browser_click'), args: { element: 'Next button', target: 'e12' }, fill: 'allow', submit: 'allow' },
   { name: 'click Review', tool: pw('browser_click'), args: { element: 'Review button', target: 'e50' }, fill: 'allow', submit: 'allow' },
+  { name: 'click Easy Apply on LinkedIn', tool: pw('browser_click'), args: { element: 'Easy Apply button', target: 'e60' }, fill: 'allow', submit: 'allow' },
+  { name: 'click Apply (to company site) on LinkedIn', tool: pw('browser_click'), args: { element: 'Apply', target: 'e61' }, fill: 'allow', submit: 'allow' },
   { name: 'click unknown ref', tool: pw('browser_click'), args: { element: 'Next button', target: 'e999' }, fill: denyReasons.unknownRef, submit: denyReasons.unknownRef },
   { name: 'click without ref', tool: pw('browser_click'), args: { element: 'Next button' }, fill: denyReasons.unknownRef, submit: denyReasons.unknownRef },
   { name: 'type into unknown ref', tool: pw('browser_type'), args: { element: 'Phone', target: 'e999', text: '1' }, fill: denyReasons.unknownRef, submit: denyReasons.unknownRef },
@@ -62,7 +69,16 @@ const table: Row[] = [
   { name: 'type submit:true', tool: pw('browser_type'), args: { element: 'Phone', ref: 'e3', text: '+353', submit: true }, fill: denyReasons.typeSubmit, submit: denyReasons.typeSubmit },
   { name: 'navigate linkedin', tool: pw('browser_navigate'), args: { url: 'https://www.linkedin.com/jobs/view/1/' }, fill: 'allow', submit: 'allow' },
   { name: 'navigate linkedin.com', tool: pw('browser_navigate'), args: { url: 'https://linkedin.com/feed' }, fill: 'allow', submit: 'allow' },
-  { name: 'navigate company site', tool: pw('browser_navigate'), args: { url: 'https://boards.greenhouse.io/acme/jobs/1' }, fill: denyReasons.foreignSite, submit: denyReasons.foreignSite },
+  { name: 'navigate Greenhouse (ATS)', tool: pw('browser_navigate'), args: { url: 'https://boards.greenhouse.io/acme/jobs/1' }, fill: 'allow', submit: 'allow' },
+  { name: 'navigate Lever (ATS)', tool: pw('browser_navigate'), args: { url: 'https://jobs.lever.co/acme/1/apply' }, fill: 'allow', submit: 'allow' },
+  { name: 'navigate ATS apex domain', tool: pw('browser_navigate'), args: { url: 'https://personio.de/' }, fill: 'allow', submit: 'allow' },
+  { name: 'navigate company site', tool: pw('browser_navigate'), args: { url: 'https://careers.acme.test/jobs/1' }, fill: denyReasons.foreignSite, submit: denyReasons.foreignSite },
+  { name: 'navigate Workday (account site)', tool: pw('browser_navigate'), args: { url: 'https://acme.wd3.myworkdayjobs.com/en-US/jobs' }, fill: denyReasons.foreignSite, submit: denyReasons.foreignSite },
+  { name: 'navigate ATS look-alike host', tool: pw('browser_navigate'), args: { url: 'https://greenhouse.io.evil.test/' }, fill: denyReasons.foreignSite, submit: denyReasons.foreignSite },
+  { name: 'navigate evilgreenhouse.io', tool: pw('browser_navigate'), args: { url: 'https://evilgreenhouse.io/' }, fill: denyReasons.foreignSite, submit: denyReasons.foreignSite },
+  { name: 'navigate http ATS', tool: pw('browser_navigate'), args: { url: 'http://boards.greenhouse.io/acme/jobs/1' }, fill: denyReasons.foreignSite, submit: denyReasons.foreignSite },
+  { name: 'navigate userinfo trick', tool: pw('browser_navigate'), args: { url: 'https://www.linkedin.com@evil.test/' }, fill: denyReasons.foreignSite, submit: denyReasons.foreignSite },
+  { name: 'new tab on an ATS', tool: pw('browser_tabs'), args: { action: 'new', url: 'https://apply.workable.com/acme/j/1/' }, fill: 'allow', submit: 'allow' },
   { name: 'navigate look-alike host', tool: pw('browser_navigate'), args: { url: 'https://linkedin.com.evil.test/' }, fill: denyReasons.foreignSite, submit: denyReasons.foreignSite },
   { name: 'navigate evillinkedin.com', tool: pw('browser_navigate'), args: { url: 'https://evillinkedin.com/' }, fill: denyReasons.foreignSite, submit: denyReasons.foreignSite },
   { name: 'navigate http linkedin', tool: pw('browser_navigate'), args: { url: 'http://www.linkedin.com/' }, fill: denyReasons.foreignSite, submit: denyReasons.foreignSite },
@@ -90,11 +106,11 @@ const table: Row[] = [
 ];
 
 describe('guardDecision', () => {
-  for (const mode of ['fill', 'submit'] as const satisfies readonly ApplyMode[]) {
+  for (const mode of ['fill', 'submit', 'submit_fresh'] as const satisfies readonly ApplyMode[]) {
     describe(mode, () => {
       it.each(table)('$name', (row) => {
         const decision = guardDecision(mode, row.tool, row.args, initialGuardState, context);
-        const expected = row[mode];
+        const expected = mode === 'submit_fresh' ? row.fresh ?? row.submit : row[mode];
         if (expected === 'allow') expect(decision).toMatchObject({ allow: true });
         else expect(decision).toMatchObject({ allow: false, reason: expected, state: initialGuardState });
       });
@@ -110,13 +126,22 @@ describe('guardDecision', () => {
     expect(guardDecision('submit', pw('browser_click'), { element: 'Done', ref: 'e1' }, first.state, context)).toMatchObject({ allow: true });
   });
 
+  it('typing on a LinkedIn page does not make Easy Apply a submit; strong words stay submit', () => {
+    const typed = guardDecision('fill', pw('browser_type'), { element: 'Phone', target: 'e3', text: '1' }, initialGuardState, context);
+    expect(typed).toMatchObject({ allow: true, state: { inputPages: [linkedinPage] } });
+    expect(guardDecision('fill', pw('browser_click'), { element: 'Easy Apply', target: 'e60' }, typed.state, context)).toMatchObject({ allow: true });
+    expect(guardDecision('fill', pw('browser_click'), { element: 'Next', target: 'e12' }, typed.state, context)).toMatchObject({ allow: true });
+    expect(guardDecision('fill', pw('browser_click'), { element: 'Submit', target: 'e40' }, typed.state, context)).toMatchObject({ allow: false, reason: denyReasons.submitInFill });
+  });
+
   it('every allowed tool is a Playwright one or a harmless built-in, and none is also disallowed', () => {
     expect(allowedTools.filter((tool) => !tool.startsWith('mcp__playwright__browser_'))).toEqual(['StructuredOutput', 'ToolSearch']);
     expect(allowedTools.filter((tool) => disallowedTools.includes(tool))).toEqual([]);
   });
 
   it('helpers: mode, hosts, paths', () => {
-    expect([parseApplyMode('submit'), parseApplyMode('fill'), parseApplyMode(undefined), parseApplyMode('SUBMIT')]).toEqual(['submit', 'fill', 'fill', 'fill']);
+    expect([parseApplyMode('submit'), parseApplyMode('submit_fresh'), parseApplyMode('fill'), parseApplyMode(undefined), parseApplyMode('SUBMIT'), parseApplyMode('submit-fresh')])
+      .toEqual(['submit', 'submit_fresh', 'fill', 'fill', 'fill', 'fill']);
     expect([isLinkedinUrl('https://de.linkedin.com/x'), isLinkedinUrl('about:blank'), isLinkedinUrl(42)]).toEqual([true, false, false]);
     expect([isUploadFile(cv, uploadDir), isUploadFile(`${uploadDir}//x.pdf`, `${uploadDir}/`), isUploadFile(`${uploadDir}/a/../../x`, uploadDir)])
       .toEqual([true, true, false]);
@@ -127,6 +152,138 @@ describe('guardDecision', () => {
     expect(guardDecision('fill', pw('browser_file_upload'), { paths: [cv] }, initialGuardState, { ...context, uploadDir: null }))
       .toMatchObject({ allow: false, reason: denyReasons.noUploadDir });
     expect(guardDecision('fill', pw('browser_file_upload'), {}, initialGuardState, { ...context, uploadDir: null })).toMatchObject({ allow: true });
+  });
+});
+
+describe('guardDecision on external sites', () => {
+  const formPage = 'https://boards.greenhouse.io/acme/jobs/1';
+  const externalRefs = {
+    a1: button('Apply for this job'), a2: { role: 'textbox', name: 'First Name', text: '' }, a3: { role: 'combobox', name: 'Country', text: '' },
+    a4: button('Submit application'), a5: { role: 'link', name: 'Jetzt bewerben', text: '' }, a6: button('Postuler'),
+    a7: { role: 'checkbox', name: 'I agree to the Candidate Privacy Policy', text: '' }, a8: button('Attach resume'),
+    a9: { role: 'generic', name: '', text: 'Apply' }, a10: button('Solicitar empleo'), a11: button('Candidater'),
+    a12: { role: 'radio', name: 'Yes', text: '' }, a13: { role: 'switch', name: 'Remote', text: '' }, a14: { role: 'option', name: 'Ireland', text: '' },
+  };
+  const external: GuardContext = { uploadDir, refs: externalRefs, page: formPage, startHost: null, visitedHosts: [] };
+  const typedHere: GuardState = { submitClicks: 0, inputPages: [formPage] };
+  const click = (target: string, element = 'Button') => [pw('browser_click'), { element, target }] as const;
+
+  type ExternalRow = Readonly<{ name: string; call: readonly [string, unknown]; state: GuardState; fill: Expect; fresh: Expect }>;
+  const rows: ExternalRow[] = [
+    { name: 'Apply before input opens the form', call: click('a1'), state: initialGuardState, fill: 'allow', fresh: 'allow' },
+    { name: 'Jetzt bewerben (link) before input', call: click('a5'), state: initialGuardState, fill: 'allow', fresh: 'allow' },
+    { name: 'Apply after input sends the form', call: click('a1'), state: typedHere, fill: denyReasons.submitInFill, fresh: 'allow' },
+    { name: 'Apply called "Next" by the agent after input', call: click('a1', 'Next button'), state: typedHere, fill: denyReasons.submitInFill, fresh: 'allow' },
+    { name: 'nameless Apply after input', call: click('a9'), state: typedHere, fill: denyReasons.submitInFill, fresh: 'allow' },
+    { name: 'Jetzt bewerben after input', call: click('a5'), state: typedHere, fill: denyReasons.submitInFill, fresh: 'allow' },
+    { name: 'Postuler after input', call: click('a6'), state: typedHere, fill: denyReasons.submitInFill, fresh: 'allow' },
+    { name: 'Candidater after input', call: click('a11'), state: typedHere, fill: denyReasons.submitInFill, fresh: 'allow' },
+    { name: 'Solicitar after input', call: click('a10'), state: typedHere, fill: denyReasons.submitInFill, fresh: 'allow' },
+    { name: 'agent says Apply on a plain button after input', call: click('a8', 'Apply button'), state: typedHere, fill: denyReasons.submitInFill, fresh: 'allow' },
+    { name: 'Submit application before input', call: click('a4'), state: initialGuardState, fill: denyReasons.submitInFill, fresh: 'allow' },
+    { name: 'Submit application after input', call: click('a4'), state: typedHere, fill: denyReasons.submitInFill, fresh: 'allow' },
+    { name: 'privacy checkbox with "candidate" after input', call: click('a7'), state: typedHere, fill: 'allow', fresh: 'allow' },
+    { name: 'Attach resume after input', call: click('a8'), state: typedHere, fill: 'allow', fresh: 'allow' },
+    { name: 'input on another page does not count here', call: click('a1'), state: { submitClicks: 0, inputPages: ['https://boards.greenhouse.io/acme/jobs/2'] }, fill: 'allow', fresh: 'allow' },
+    { name: 'Apply after the one submit', call: click('a1'), state: { submitClicks: 1, inputPages: [formPage] }, fill: denyReasons.submitInFill, fresh: denyReasons.secondSubmit },
+    { name: 'type into an unknown ref', call: [pw('browser_type'), { element: 'Email', target: 'zz', text: 'x' }], state: initialGuardState, fill: denyReasons.unknownRef, fresh: denyReasons.unknownRef },
+    { name: 'press Enter', call: [pw('browser_press_key'), { key: 'Enter' }], state: typedHere, fill: denyReasons.enter, fresh: denyReasons.enter },
+    { name: 'type submit:true', call: [pw('browser_type'), { element: 'First Name', target: 'a2', text: 'Illia', submit: true }], state: typedHere, fill: denyReasons.typeSubmit, fresh: denyReasons.typeSubmit },
+    { name: 'upload outside the folder', call: [pw('browser_file_upload'), { paths: ['/etc/passwd'] }], state: initialGuardState, fill: upload, fresh: upload },
+  ];
+
+  for (const mode of ['fill', 'submit_fresh'] as const) {
+    it.each(rows)(`${mode}: $name`, (row) => {
+      const decision = guardDecision(mode, row.call[0], row.call[1], row.state, external);
+      const expected = mode === 'fill' ? row.fill : row.fresh;
+      if (expected === 'allow') expect(decision).toMatchObject({ allow: true });
+      else expect(decision).toMatchObject({ allow: false, reason: expected, state: row.state });
+    });
+  }
+
+  it('type, select, fill_form and upload mark the page; snapshots, clicks and cancelled uploads do not', () => {
+    const marks = (tool: string, args: unknown) => guardDecision('fill', pw(tool), args, initialGuardState, external).state.inputPages;
+    expect(marks('browser_type', { element: 'First Name', target: 'a2', text: 'Illia' })).toEqual([formPage]);
+    expect(marks('browser_select_option', { element: 'Country', target: 'a3', values: ['IE'] })).toEqual([formPage]);
+    expect(marks('browser_fill_form', { fields: [{ name: 'First Name', type: 'textbox', target: 'a2', value: 'Illia' }] })).toEqual([formPage]);
+    expect(marks('browser_file_upload', { paths: [cv] })).toEqual([formPage]);
+    expect(marks('browser_file_upload', {})).toEqual([]);
+    expect(marks('browser_click', { element: 'Apply', target: 'a1' })).toEqual([]);
+    expect(marks('browser_click', { element: 'Attach', target: 'a8' })).toEqual([]);
+    // A click on a checkbox, radio, switch or option (role from the snapshot) is input.
+    expect(marks('browser_click', { element: 'Consent', target: 'a7' })).toEqual([formPage]);
+    expect(marks('browser_click', { element: 'Yes', target: 'a12' })).toEqual([formPage]);
+    expect(marks('browser_click', { element: 'Remote', target: 'a13' })).toEqual([formPage]);
+    expect(marks('browser_click', { element: 'Ireland', target: 'a14' })).toEqual([formPage]);
+    // The agent calling a button a checkbox does not make it one.
+    expect(marks('browser_click', { element: 'checkbox', target: 'a8' })).toEqual([]);
+    expect(marks('browser_snapshot', {})).toEqual([]);
+    // A denied input marks nothing.
+    expect(marks('browser_file_upload', { paths: ['/etc/passwd'] })).toEqual([]);
+  });
+
+  it('fill: Apply opens the form, then typing, then Apply is denied', () => {
+    const open = guardDecision('fill', ...click('a1'), initialGuardState, external);
+    expect(open).toMatchObject({ allow: true, state: initialGuardState });
+    const typed = guardDecision('fill', pw('browser_type'), { element: 'First Name', target: 'a2', text: 'Illia' }, open.state, external);
+    expect(guardDecision('fill', ...click('a1'), typed.state, external)).toMatchObject({ allow: false, reason: denyReasons.submitInFill });
+  });
+
+  it('a form filled only by clicks on checkbox and radio: Apply after it is denied in fill, one submit in submit_fresh', () => {
+    const clicksOnly = (mode: ApplyMode) => {
+      const open = guardDecision(mode, ...click('a1'), initialGuardState, external);
+      expect(open).toMatchObject({ allow: true, state: { submitClicks: 0, inputPages: [] } });
+      const checked = guardDecision(mode, ...click('a7', 'Consent'), open.state, external);
+      const radio = guardDecision(mode, ...click('a12', 'Yes'), checked.state, external);
+      expect(radio).toMatchObject({ allow: true, state: { submitClicks: 0, inputPages: [formPage] } });
+      return radio.state;
+    };
+    expect(guardDecision('fill', ...click('a1'), clicksOnly('fill'), external)).toMatchObject({ allow: false, reason: denyReasons.submitInFill });
+    const filled = clicksOnly('submit_fresh');
+    const sent = guardDecision('submit_fresh', ...click('a1'), filled, external);
+    expect(sent).toMatchObject({ allow: true, state: { submitClicks: 1 } });
+    expect(guardDecision('submit_fresh', ...click('a1'), sent.state, external)).toMatchObject({ allow: false, reason: denyReasons.secondSubmit });
+    expect(guardDecision('submit_fresh', ...click('a4'), sent.state, external)).toMatchObject({ allow: false, reason: denyReasons.secondSubmit });
+  });
+
+  it('submit_fresh: open with Apply, fill, one submit; the second is denied', () => {
+    const open = guardDecision('submit_fresh', ...click('a1'), initialGuardState, external);
+    expect(open).toMatchObject({ allow: true, state: { submitClicks: 0 } });
+    const typed = guardDecision('submit_fresh', pw('browser_type'), { element: 'First Name', target: 'a2', text: 'Illia' }, open.state, external);
+    const sent = guardDecision('submit_fresh', ...click('a4'), typed.state, external);
+    expect(sent).toMatchObject({ allow: true, state: { submitClicks: 1 } });
+    expect(guardDecision('submit_fresh', ...click('a4'), sent.state, external)).toMatchObject({ allow: false, reason: denyReasons.secondSubmit });
+    expect(guardDecision('submit_fresh', ...click('a1'), sent.state, external)).toMatchObject({ allow: false, reason: denyReasons.secondSubmit });
+    // Typing into a submit-named element is never the submit.
+    expect(guardDecision('submit_fresh', pw('browser_select_option'), { element: 'x', target: 'a4', values: ['1'] }, typed.state, external))
+      .toMatchObject({ allow: false, reason: denyReasons.submitInFill });
+  });
+
+  it('navigation: start URL host and visited hosts are allowed, nothing else, https only', () => {
+    const withStart: GuardContext = { ...external, startHost: 'careers.acme.test', visitedHosts: ['jobs.acme-corp.test'] };
+    const go = (url: string, ctx: GuardContext = withStart) => guardDecision('fill', pw('browser_navigate'), { url }, initialGuardState, ctx);
+    expect(go('https://careers.acme.test/jobs/1/apply')).toMatchObject({ allow: true });
+    expect(go('https://CAREERS.acme.test/x')).toMatchObject({ allow: true });
+    expect(go('https://jobs.acme-corp.test/form')).toMatchObject({ allow: true });
+    expect(go('https://www.linkedin.com/jobs/view/1/')).toMatchObject({ allow: true });
+    expect(go('https://acme.recruitee.com/o/dev')).toMatchObject({ allow: true });
+    expect(go('http://careers.acme.test/jobs/1')).toMatchObject({ allow: false, reason: denyReasons.foreignSite });
+    // Exact host, not its parent or siblings.
+    expect(go('https://acme.test/')).toMatchObject({ allow: false, reason: denyReasons.foreignSite });
+    expect(go('https://evil.careers.acme.test.example/')).toMatchObject({ allow: false, reason: denyReasons.foreignSite });
+    expect(go('https://other.test/')).toMatchObject({ allow: false, reason: denyReasons.foreignSite });
+    expect(go('https://careers.acme.test/', external)).toMatchObject({ allow: false, reason: denyReasons.foreignSite });
+    expect(guardDecision('fill', pw('browser_tabs'), { action: 'new', url: 'https://jobs.acme-corp.test/' }, initialGuardState, withStart)).toMatchObject({ allow: true });
+    expect(guardDecision('fill', pw('browser_tabs'), { action: 'new', url: 'https://other.test/' }, initialGuardState, withStart))
+      .toMatchObject({ allow: false, reason: denyReasons.foreignSite });
+    expect(denyReasons.foreignSite).toContain('"manual"');
+  });
+
+  it('helpers: ATS list and allowed URLs', () => {
+    for (const domain of atsDomains) expect(isAllowedUrl(`https://x.${domain}/`, { startHost: null, visitedHosts: [] })).toBe(true);
+    expect(isAllowedUrl('https://myworkdayjobs.com/', { startHost: null, visitedHosts: [] })).toBe(false);
+    expect(isAllowedUrl('about:blank', { startHost: null, visitedHosts: [] })).toBe(false);
+    expect(isAllowedUrl(undefined, { startHost: null, visitedHosts: [] })).toBe(false);
   });
 });
 
@@ -163,7 +320,7 @@ describe('refs from ARIA snapshots', () => {
     const click = updateRefIndex(first, pw('browser_click'), [{ type: 'text', text: '- Page URL: https://www.linkedin.com/jobs/view/4478980483/?x=1' }]);
     expect(click.refs.f11e1083).toBeDefined();
     const other = updateRefIndex(click, pw('browser_click'), [{ type: 'text', text: '- Page URL: https://www.linkedin.com/feed/' }]);
-    expect(other).toEqual({ page: 'https://www.linkedin.com/feed/', refs: {} });
+    expect(other).toEqual({ page: 'https://www.linkedin.com/feed/', refs: {}, hosts: ['www.linkedin.com'] });
   });
 });
 
@@ -180,7 +337,7 @@ describe('agent-guard hook script', () => {
   };
 
   function hook(input: unknown, env: Record<string, string | undefined>): string {
-    const { APPLY_MODE: _mode, APPLY_GUARD_DIR: _dir, APPLY_UPLOAD_DIR: _upload, ...base } = process.env;
+    const { APPLY_MODE: _mode, APPLY_GUARD_DIR: _dir, APPLY_UPLOAD_DIR: _upload, APPLY_START_URL: _start, ...base } = process.env;
     return execFileSync(process.execPath, [tsx, script], {
       input: typeof input === 'string' ? input : JSON.stringify(input),
       env: { ...base, ...Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined)) },
@@ -253,6 +410,75 @@ describe('agent-guard hook script', () => {
     expect(hook(submitClick, { APPLY_MODE: 'submit', APPLY_GUARD_DIR: dir })).toBe('');
     expect(existsSync(path.join(dir, 'submit-click'))).toBe(true);
     expect(denied(hook(submitClick, { APPLY_MODE: 'submit', APPLY_GUARD_DIR: dir })).permissionDecisionReason).toBe(denyReasons.secondSubmit);
+    // Only the allowed send click is marked in the log: the caller tells «maybe sent» by it.
+    const log = readFileSync(path.join(dir, 'guard-log.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(log.filter((entry) => entry.event !== 'post').map((entry) => [entry.decision, entry.submit])).toEqual([['allow', true], ['deny', false]]);
+  });
+
+  const externalForm = readFileSync(new URL('./fixtures/external/greenhouse-form-snapshot.txt', import.meta.url), 'utf8');
+  const post = (tool: string, text: string) => ({ hook_event_name: 'PostToolUse', tool_name: pw(tool), tool_input: {}, tool_response: [{ type: 'text', text }] });
+  const call = (tool: string, toolInput: unknown) => ({ tool_name: pw(tool), tool_input: toolInput });
+  const navigate = (url: string) => call('browser_navigate', { url });
+
+  it('external form in fill: Apply opens it, input is remembered, Apply after input is denied', () => {
+    const dir = attempt();
+    const env = { APPLY_MODE: 'fill', APPLY_GUARD_DIR: dir, APPLY_UPLOAD_DIR: uploadDir };
+    expect(hook(post('browser_snapshot', externalForm), env)).toBe('');
+    expect(hook(call('browser_click', { element: 'Apply', target: 'e12' }), env)).toBe('');
+    expect(hook(call('browser_type', { element: 'First Name', target: 'e21', text: 'Illia' }), env)).toBe('');
+    expect(readFileSync(path.join(dir, 'input-pages'), 'utf8')).toBe('https://job-boards.greenhouse.io/acme/jobs/1\n');
+    expect(hook(call('browser_file_upload', { paths: [cv] }), env)).toBe('');
+    // The page is written once.
+    expect(readFileSync(path.join(dir, 'input-pages'), 'utf8')).toBe('https://job-boards.greenhouse.io/acme/jobs/1\n');
+    expect(denied(hook(call('browser_click', { element: 'Next', target: 'e12' }), env)).permissionDecisionReason).toBe(denyReasons.submitInFill);
+    expect(denied(hook(call('browser_click', { element: 'Next', target: 'e40' }), env)).permissionDecisionReason).toBe(denyReasons.submitInFill);
+    // The consent checkbox mentions "candidate" but is not a submit.
+    expect(hook(call('browser_click', { element: 'Consent', target: 'e30' }), env)).toBe('');
+    expect(readFileSync(path.join(dir, 'input-pages'), 'utf8')).toBe('https://job-boards.greenhouse.io/acme/jobs/1\n');
+    const log = readFileSync(path.join(dir, 'guard-log.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(log.at(-1)).toMatchObject({ page: 'https://job-boards.greenhouse.io/acme/jobs/1', decision: 'allow' });
+  });
+
+  it('external form in fill filled only by a checkbox click: Apply is denied after it', () => {
+    const dir = attempt();
+    const env = { APPLY_MODE: 'fill', APPLY_GUARD_DIR: dir };
+    expect(hook(post('browser_snapshot', externalForm), env)).toBe('');
+    expect(hook(call('browser_click', { element: 'Apply', target: 'e12' }), env)).toBe('');
+    expect(existsSync(path.join(dir, 'input-pages'))).toBe(false);
+    expect(hook(call('browser_click', { element: 'Consent', target: 'e30' }), env)).toBe('');
+    expect(denied(hook(call('browser_click', { element: 'Apply', target: 'e12' }), env)).permissionDecisionReason).toBe(denyReasons.submitInFill);
+  });
+
+  it('external form in submit_fresh: one submit across hook processes', () => {
+    const dir = attempt();
+    const env = { APPLY_MODE: 'submit_fresh', APPLY_GUARD_DIR: dir };
+    expect(hook(post('browser_snapshot', externalForm), env)).toBe('');
+    expect(hook(call('browser_click', { element: 'Apply', target: 'e12' }), env)).toBe('');
+    expect(existsSync(path.join(dir, 'submit-click'))).toBe(false);
+    expect(hook(call('browser_type', { element: 'First Name', target: 'e21', text: 'Illia' }), env)).toBe('');
+    expect(hook(call('browser_click', { element: 'Submit', target: 'e40' }), env)).toBe('');
+    expect(existsSync(path.join(dir, 'submit-click'))).toBe(true);
+    expect(denied(hook(call('browser_click', { element: 'Submit', target: 'e40' }), env)).permissionDecisionReason).toBe(denyReasons.secondSubmit);
+    expect(denied(hook(call('browser_click', { element: 'Apply', target: 'e12' }), env)).permissionDecisionReason).toBe(denyReasons.secondSubmit);
+    expect(denied(hook({ tool_name: pw('browser_press_key'), tool_input: { key: 'Enter' } }, env)).permissionDecisionReason).toBe(denyReasons.enter);
+  });
+
+  it('hosts: the start URL host and hosts the browser reached are allowed, others are not', () => {
+    const dir = attempt();
+    const env = { APPLY_MODE: 'fill', APPLY_GUARD_DIR: dir };
+    expect(denied(hook(navigate('https://careers.acme.test/jobs/1'), env)).permissionDecisionReason).toBe(denyReasons.foreignSite);
+    expect(hook(navigate('https://careers.acme.test/jobs/1'), { ...env, APPLY_START_URL: 'https://careers.acme.test/jobs/1' })).toBe('');
+    expect(denied(hook(navigate('http://careers.acme.test/jobs/1'), { ...env, APPLY_START_URL: 'https://careers.acme.test/jobs/1' })).permissionDecision).toBe('deny');
+    // An http start URL widens nothing.
+    expect(denied(hook(navigate('https://careers.acme.test/jobs/1'), { ...env, APPLY_START_URL: 'http://careers.acme.test/jobs/1' })).permissionDecision).toBe('deny');
+    // LinkedIn's Apply button led to the company site: the click response shows its Page URL.
+    expect(hook(post('browser_click', '- Page URL: https://jobs.acme-corp.test/apply?id=1\n'), env)).toBe('');
+    expect(JSON.parse(readFileSync(path.join(dir, 'refs.json'), 'utf8')).hosts).toEqual(['jobs.acme-corp.test']);
+    expect(hook(navigate('https://jobs.acme-corp.test/apply?id=2'), env)).toBe('');
+    expect(denied(hook(navigate('https://evil.test/'), env)).permissionDecisionReason).toBe(denyReasons.foreignSite);
+    // An http page is not remembered.
+    expect(hook(post('browser_click', '- Page URL: http://plain.acme.test/\n'), env)).toBe('');
+    expect(denied(hook(navigate('https://plain.acme.test/'), env)).permissionDecision).toBe('deny');
   });
 
   it('fails closed: bad input or no attempt folder denies the call', () => {

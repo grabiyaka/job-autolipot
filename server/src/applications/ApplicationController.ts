@@ -13,6 +13,9 @@ export class ApplicationController {
 
   submit = async (request: FastifyRequest<{ Params: IdParams }>) => this.applications.submitAs(requireActor(request.actor), request.params.id);
 
+  manualApplied = async (request: FastifyRequest<{ Params: IdParams }>) =>
+    this.applications.markManualAppliedAs(requireActor(request.actor), request.params.id);
+
   answer = async (request: FastifyRequest<{ Params: IdParams; Body: AnswerInput }>) =>
     this.applications.answerAs(requireActor(request.actor), request.params.id, request.body);
 }

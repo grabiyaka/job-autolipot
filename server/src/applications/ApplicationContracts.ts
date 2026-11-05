@@ -3,7 +3,11 @@
  * ApplyBrowser with plugins/browser-lock.ts; tests pass fakes.
  */
 
-export type ApplyAgentMode = 'fill' | 'submit';
+/**
+ * fill: stop before sending; submit: resume the fill session and send (Easy Apply);
+ * submit_fresh: a new run that fills an external form again from `startUrl` and sends it once.
+ */
+export type ApplyAgentMode = 'fill' | 'submit' | 'submit_fresh';
 
 export type AgentSpend = Readonly<{
   tokens: Readonly<{ input: number; cacheRead: number; output: number }>;
@@ -15,12 +19,15 @@ export type ApplyAgentRequest = Readonly<{
   systemPrompt: string;
   schema: object;
   mode: ApplyAgentMode;
+  /** The page the run starts on; the guard allows its host (the job page, or the form for submit_fresh). */
+  startUrl?: string;
   resumeSessionId?: string;
   signal?: AbortSignal;
 }>;
 
 /** One tool call the guard saw; only the facts the domain needs. */
-export type AgentToolCall = Readonly<{ tool: string; decision: 'allow' | 'deny'; reason?: string }>;
+/** `submit`: the guard counted this allowed click as the one send click; absent when the guard did not say. */
+export type AgentToolCall = Readonly<{ tool: string; decision: 'allow' | 'deny'; reason?: string; submit?: boolean }>;
 
 export type ApplyAgentResult = AgentSpend & Readonly<{
   /** The structured answer, not validated yet. */

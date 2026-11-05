@@ -1,5 +1,5 @@
 import type { PrismaClient, Prisma } from '../../generated/prisma/client.js';
-import type { ApplicationStatus, FilledField, QuestionView, StoredApplication } from './ApplicationService.js';
+import type { ApplicationKind, ApplicationStatus, FilledField, QuestionView, StoredApplication } from './ApplicationService.js';
 
 const withJob = { job: { select: { title: true, company: true, url: true, trackerId: true, status: true, userId: true } } } as const;
 type ApplicationRecord = Prisma.ApplicationGetPayload<{ include: typeof withJob }>;
@@ -21,10 +21,10 @@ function toApplication(record: ApplicationRecord): StoredApplication {
   const result = storedResult(record.result);
   return {
     id: record.id, jobId: record.jobId, jobTitle: record.job.title, company: record.job.company, url: record.job.url,
-    status: record.status, filled: result.filled, summary: result.summary, note: record.note,
+    status: record.status, kind: record.kind, applyUrl: record.applyUrl, filled: result.filled, summary: result.summary, note: record.note,
     inputTokens: record.inputTokens, cacheReadTokens: record.cacheReadTokens, outputTokens: record.outputTokens, costMicros: record.costMicros,
     startedAt: record.startedAt.toISOString(), finishedAt: record.finishedAt?.toISOString() ?? null,
-    sessionId: record.sessionId, trackerId: record.job.trackerId, jobStatus: record.job.status,
+    sessionId: record.sessionId, trackerId: record.job.trackerId, jobStatus: record.job.status, trackerChannel: record.trackerChannel,
   };
 }
 
@@ -43,6 +43,10 @@ export type AttemptResult = Readonly<{
   sessionId?: string | null;
   /** JSON of the agent's answer and the run facts. */
   result?: string | null;
+  kind?: ApplicationKind;
+  applyUrl?: string | null;
+  /** Set when the attempt is sent: the `channel` of its Job-Tracker mark. */
+  trackerChannel?: string;
   tokens: Readonly<{ input: number; cacheRead: number; output: number }>;
   costMicros: number;
   finishedAt: Date;
@@ -80,6 +84,9 @@ export class ApplicationRepository {
         status: result.status, note: result.note, finishedAt: result.finishedAt,
         ...(result.sessionId !== undefined ? { sessionId: result.sessionId } : {}),
         ...(result.result !== undefined ? { result: result.result } : {}),
+        ...(result.kind !== undefined ? { kind: result.kind } : {}),
+        ...(result.applyUrl !== undefined ? { applyUrl: result.applyUrl } : {}),
+        ...(result.trackerChannel !== undefined ? { trackerChannel: result.trackerChannel } : {}),
         // A submit adds its tokens to the fill run's.
         inputTokens: { increment: result.tokens.input }, cacheReadTokens: { increment: result.tokens.cacheRead },
         outputTokens: { increment: result.tokens.output }, costMicros: { increment: result.costMicros },

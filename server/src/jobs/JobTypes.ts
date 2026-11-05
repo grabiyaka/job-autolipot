@@ -1,5 +1,5 @@
 export const jobStatuses = [
-  'found', 'scored', 'rejected', 'queued', 'applying', 'applied', 'needs_input', 'failed', 'skipped',
+  'found', 'scored', 'rejected', 'queued', 'applying', 'applied', 'needs_input', 'failed', 'skipped', 'manual',
 ] as const;
 export type JobStatus = typeof jobStatuses[number];
 
@@ -59,8 +59,11 @@ export type JobScore = Readonly<{ score: number; why?: string | null; redFlags?:
 /** Decisions the scorer makes after a score: queue, reject, or skip a repeat. */
 export type JobDecision = 'queued' | 'rejected' | 'skipped';
 
-/** Statuses the applier moves a job through; `why` explains skipped and failed. */
-export type ApplyJobStatus = 'queued' | 'applying' | 'applied' | 'needs_input' | 'failed' | 'skipped';
+/**
+ * Statuses the applier moves a job through; `why` explains skipped, failed and manual.
+ * `manual`: only the owner can apply (an account, a captcha, Workday…); «✅ подал сам» makes it applied.
+ */
+export type ApplyJobStatus = 'queued' | 'applying' | 'applied' | 'needs_input' | 'failed' | 'skipped' | 'manual';
 
 /** What pipeline stages need from the jobs domain; they act on behalf of the owner. */
 export interface JobPipelineApi {

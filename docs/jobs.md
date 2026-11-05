@@ -28,11 +28,16 @@
 | `scored` | `scored` (переоценка), `queued`, `rejected`, `skipped` |
 | `rejected` | `scored`, `queued`, `skipped` |
 | `queued` | `applying`, `rejected`, `skipped` |
-| `applying` | `applied`, `needs_input`, `failed` |
+| `applying` | `applied`, `needs_input`, `failed`, `manual` |
 | `needs_input` | `queued`, `applying`, `skipped` |
 | `failed` | `queued`, `skipped` |
 | `skipped` | `queued` |
+| `manual` | `applied` («подал сам»), `queued` (заполнить заново, `--job`), `skipped` (отказ) |
 | `applied` | — (финальный) |
+
+`manual` — подать может только владелец: сайт с аккаунтом или капчей (Workday, iCIMS, Taleo,
+SuccessFactors), вход по паролю, ссылка не https. Причина — в `why`, ссылка на форму — у попытки
+подачи ([applications.md](applications.md)).
 
 Человек вручную ставит только `queued`, `rejected` или `skipped`. Остальные статусы
 выставляют scorer и applier через API конвейера. Изменение статуса условное:
@@ -74,12 +79,12 @@
 | `unknownUrls(ownerId, urls)` | Какие из URL пользователь ещё не видел. Сборщик вызывает это до загрузки описаний. Некорректные URL отбрасываются. |
 | `listForScoring(ownerId, limit?)` | Вакансии в `found` с описанием, старые первыми. Без `limit` — все. |
 | `recordScore(ownerId, id, { score, why?, redFlags?, profileRevision? })` | Оценка 0–100 от scorer, статус становится `scored`. `profileRevision` — ревизия профиля Job-Tracker, по которой оценивали. |
-| `findTwin(ownerId, company, title, exceptId)` | Повтор вакансии: другая запись с той же компанией и названием (регистр, пробелы и пунктуация не важны, включая кириллицу), которая уже в `scored`, `queued`, `applying`, `applied`, `needs_input`, или `rejected` с оценкой (отклонила модель), или отправлена в Job-Tracker. Отсеянная фильтром по названию (`rejected` без оценки) двойником не считается. Иначе `null`. |
+| `findTwin(ownerId, company, title, exceptId)` | Повтор вакансии: другая запись с той же компанией и названием (регистр, пробелы и пунктуация не важны, включая кириллицу), которая уже в `scored`, `queued`, `applying`, `applied`, `needs_input`, `manual`, или `rejected` с оценкой (отклонила модель), или отправлена в Job-Tracker. Отсеянная фильтром по названию (`rejected` без оценки) двойником не считается. Иначе `null`. |
 | `recordDecision(ownerId, id, 'queued' \| 'rejected' \| 'skipped', why?)` | Решение scorer по таблице переходов. Переданный `why` заменяет причину (пустая строка стирает её), без него причина остаётся. |
 | `listUnsynced(ownerId)` | Вакансии в `queued` без `trackerId`, старые первыми: их ещё нужно отправить в Job-Tracker. |
 | `markSynced(ownerId, id, trackerId)` | Сохранить ID записи Job-Tracker. Повтор с тем же ID ничего не меняет, другой ID даёт 409 `JOB_ALREADY_SYNCED`. Статус вакансии не проверяется: запись в Job-Tracker уже создана. |
 | `findByTrackerId(ownerId, trackerId)` | Своя вакансия, связанная с этой записью Job-Tracker, или `null`. Нужна для досылки оценок. |
-| `recordStatus(ownerId, id, status)` | Переход статуса по таблице выше. Сейчас через него идёт ручной `PATCH`, дальше — applier (`applying`, `applied`, `needs_input`, `failed`). |
+| `recordStatus(ownerId, id, status)` | Переход статуса по таблице выше. Сейчас через него идёт ручной `PATCH`, дальше — applier (`applying`, `applied`, `needs_input`, `failed`, `manual`). |
 
 Модуль источника сам убирает свои трекинг-параметры (`utm_*`, `refId` и т. п.) до передачи
 карточки. Домен только приводит URL к общей форме: срезает `#фрагмент` и проверяет схему.

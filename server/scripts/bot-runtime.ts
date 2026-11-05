@@ -13,10 +13,10 @@ import type { ScoringLine } from '../src/scoring/ScoringService.js';
 import type { SearchService } from '../src/searches/SearchService.js';
 import type { Logger } from '../src/searches/SearchTypes.js';
 import {
-  answersText, applyReportLines, helpText, minutesAgo, progressText, questionMessage, readyMessage, submitResultText, parseCallback, parseCommand, queuedText, scheduleLine, scheduleSaved, schedulesMessage, searchesMessage,
+  answersText, applyReportLines, helpText, manualMessage, minutesAgo, progressText, questionMessage, readyMessage, submitLabel, submitResultText, parseCallback, parseCommand, queuedText, scheduleLine, scheduleSaved, schedulesMessage, searchesMessage,
   searchLine, statusText,
 } from './bot-commands.js';
-import type { BotCommand, TaskProgress } from './bot-commands.js';
+import type { ApplicationAction, BotCommand, TaskProgress } from './bot-commands.js';
 import { cycleSummaryLines, queuedCount, scoringProblems, scoringSummaryLines, searchReportLines } from './pipeline-cli.js';
 import type { CycleScore, CycleStage, StopWording } from './pipeline-cli.js';
 import { collectJobs, runCycle, scoreOwners } from './pipeline-tasks.js';
@@ -55,7 +55,7 @@ export type BotServices = Readonly<{
   pipeline: PipelinePorts;
   /** Applying: fill runs as the `apply` task, ✅ / ❌ buttons and replies to the agent's questions. */
   applications: Pick<ApplicationApi,
-    'fillNext' | 'submit' | 'reject' | 'answerQuestion' | 'pending' | 'setQuestionMessage' | 'findQuestionByMessage'>;
+    'fillNext' | 'submit' | 'markManualApplied' | 'reject' | 'answerQuestion' | 'pending' | 'setQuestionMessage' | 'findQuestionByMessage'>;
 }>;
 
 // ── One task at a time ──
@@ -71,9 +71,11 @@ export type TaskOutcome = Readonly<{
   /** Errors worth a message even after a quiet scheduled run. */
   problems: boolean;
   minutes: number;
-  /** Apply runs: the forms waiting for ✅ and the agent's questions, each sent as its own message. */
-  apply?: Readonly<{ ready: ApplicationView[]; questions: QuestionView[] }>;
+  /** Apply runs: the forms waiting for ✅, the agent's questions and the jobs to apply to by hand, each its own message. */
+  apply?: ApplyMessages;
 }>;
+
+export type ApplyMessages = Readonly<{ ready: readonly ApplicationView[]; questions: readonly QuestionView[]; manual: readonly ApplicationView[] }>;
 
 type Current = { task: string; trigger: TaskTrigger; startedAt: Date; controller: AbortController; progress: TaskProgress };
 
@@ -231,7 +233,7 @@ export class TaskRunner {
       const failed = report.lines.some((line) => line.status === 'failed') || report.resent.some((item) => !item.ok);
       return {
         status: signal.aborted ? 'aborted' : 'ok', lines: applyReportLines(report), queued: 0,
-        problems: failed || report.stopped === 'budget', apply: { ready: report.ready, questions: report.questions },
+        problems: failed || report.stopped === 'budget', apply: { ready: report.ready, questions: report.questions, manual: report.manual },
       };
     }
 
@@ -289,7 +291,7 @@ const pushFailed = (score: CycleStage<CycleScore>): boolean =>
 export function shouldReport(outcome: TaskOutcome, policy: ScheduledReportPolicy): boolean {
   if (outcome.trigger === 'manual' || policy === 'always') return true;
   return outcome.status !== 'ok' || outcome.problems || outcome.queued > 0
-    || Boolean(outcome.apply && (outcome.apply.ready.length || outcome.apply.questions.length));
+    || Boolean(outcome.apply && (outcome.apply.ready.length || outcome.apply.questions.length || outcome.apply.manual.length));
 }
 
 const outcomeMarks: Record<TaskOutcome['status'], string> = { ok: '✅', error: '⚠️', aborted: '⏹', busy: '⛔' };
@@ -532,8 +534,10 @@ export class TelegramBot {
       case 'answers': return this.say(answersText(await answers.list(this.owner)));
       case 'pending': {
         const pending = await this.services.applications.pending(this.owner.id);
-        if (!pending.ready.length && !pending.questions.length) return this.say('Ничего не ждёт ✅ и открытых вопросов нет.');
-        return this.sendApply(pending.ready, pending.questions);
+        if (!pending.ready.length && !pending.questions.length && !pending.manual.length) {
+          return this.say('Ничего не ждёт ✅ или подачи вручную, открытых вопросов нет.');
+        }
+        return this.sendApply(pending);
       }
       case 'answer': {
         const saved = await answers.upsert(this.owner.id, command.question, command.answer, 'telegram');
@@ -568,7 +572,7 @@ export class TelegramBot {
     const job = (async () => {
       const outcome = await this.runner.run(task, trigger, options, scheduleId);
       if (shouldReport(outcome, this.settings.reportPolicy)) await this.say(await this.report(outcome));
-      if (outcome.apply) await this.sendApply(outcome.apply.ready, outcome.apply.questions);
+      if (outcome.apply) await this.sendApply(outcome.apply);
     })().catch((error: unknown) => this.runtime.out.warn(`${task}: ${error instanceof Error ? error.message : error}`));
     const tracked = job.finally(() => { this.tasks.delete(tracked); });
     this.tasks.add(tracked);
@@ -576,10 +580,12 @@ export class TelegramBot {
 
   // ── Applying ──
 
-  /** One message per form waiting for ✅ (with buttons) and per question (its id is kept for the reply). */
-  private async sendApply(ready: readonly ApplicationView[], questions: readonly QuestionView[]): Promise<void> {
-    for (const application of ready) {
-      const message = readyMessage(application);
+  /**
+   * One message per form waiting for ✅ and per job to apply to by hand (with buttons), and per question
+   * (its id is kept for the reply).
+   */
+  private async sendApply({ ready, questions, manual }: ApplyMessages): Promise<void> {
+    for (const message of [...ready.map(readyMessage), ...manual.map(manualMessage)]) {
       await this.telegram.sendMessage(this.settings.chatId, message.text, { keyboard: message.keyboard });
     }
     for (const question of questions) {
@@ -588,8 +594,11 @@ export class TelegramBot {
     }
   }
 
-  /** ✅ sends the form in the background (one task at a time); ❌ skips the job at once. */
-  private async applicationButton(callbackId: string, messageId: number, action: 'submit' | 'reject', applicationId: string): Promise<void> {
+  /**
+   * ✅ sends the form in the background (one task at a time; an external form is filled again first);
+   * ❌ skips the job at once; «✅ подал сам» marks a `manual` job applied and Job-Tracker at once.
+   */
+  private async applicationButton(callbackId: string, messageId: number, action: ApplicationAction, applicationId: string): Promise<void> {
     const { applications } = this.services;
     if (action === 'reject') {
       const rejected = await applications.reject(this.owner.id, applicationId);
@@ -598,13 +607,30 @@ export class TelegramBot {
       await this.telegram.answerCallbackQuery(callbackId, 'Отклонено');
       return;
     }
+    if (action === 'appliedByHand') {
+      const report = await applications.markManualApplied(this.owner.id, applicationId);
+      await this.telegram.editMessageText(this.settings.chatId, messageId,
+        `🖐 Подано вручную: ${escapeHtml(report.application.jobTitle)} — ${escapeHtml(report.application.company)}`);
+      await this.telegram.answerCallbackQuery(callbackId, 'Отмечено');
+      await this.say(submitResultText(report));
+      return;
+    }
     const busy = this.runner.busyText();
     if (busy) { await this.telegram.answerCallbackQuery(callbackId, `${busy}. Нажмите позже.`.slice(0, 190)); return; }
-    await this.telegram.answerCallbackQuery(callbackId, 'Отправляю…');
-    await this.telegram.editMessageText(this.settings.chatId, messageId, '⏳ Отправляю заявку…');
-    const job = (async () => {
+    // The attempt tells whether ✅ resumes Easy Apply or fills an external form again (minutes).
+    const attempt = (await applications.pending(this.owner.id)).ready.find((item) => item.id === applicationId) ?? null;
+    const job = attempt ? `${escapeHtml(attempt.jobTitle)} — ${escapeHtml(attempt.company)}` : '';
+    if (attempt?.kind === 'external') {
+      await this.telegram.answerCallbackQuery(callbackId, 'Заполняю заново и отправляю…');
+      await this.telegram.editMessageText(this.settings.chatId, messageId,
+        `⏳ Заполняю заново и отправляю: ${job}. Это пара минут, ход — /status; итог придёт сообщением.`);
+    } else {
+      await this.telegram.answerCallbackQuery(callbackId, 'Отправляю…');
+      await this.telegram.editMessageText(this.settings.chatId, messageId, `⏳ Отправляю заявку${job ? `: ${job}` : ''}…`);
+    }
+    const run = (async () => {
       try {
-        const run = await this.runner.exclusive('apply:submit', (signal) => applications.submit(this.owner.id, applicationId, signal));
+        const run = await this.runner.exclusive(submitLabel(attempt), (signal) => applications.submit(this.owner.id, applicationId, signal));
         if (!run) { await this.say('Не отправлено: бот занят другой задачей. Повторите: /pending'); return; }
         await this.say(submitResultText(run.result));
       } catch (error) {
@@ -614,7 +640,7 @@ export class TelegramBot {
         await this.say(escapeHtml(`Не отправлено: ${message}`));
       }
     })().catch((error: unknown) => this.runtime.out.warn(`submit: ${error instanceof Error ? error.message : error}`));
-    const tracked = job.finally(() => { this.tasks.delete(tracked); });
+    const tracked = run.finally(() => { this.tasks.delete(tracked); });
     this.tasks.add(tracked);
   }
 

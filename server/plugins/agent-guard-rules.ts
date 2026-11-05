@@ -6,11 +6,20 @@ import type { RefInfo } from './agent-snapshot-refs.js';
  * every tool call; the prompt asks for the same, but only this is binding. Pure: the hook reads
  * the call and the state, this decides, the hook writes the state back.
  *
- * - fill: never submit — no click on a submit/send button, no Enter, no `submit: true`.
- * - submit: the same, except one click on such a button per run.
- * - both: only https *.linkedin.com, uploads only from <agentCwd>/files/, only the tools listed below
- *   (Playwright plus the harmless built-ins StructuredOutput and ToolSearch).
+ * - fill: never submit — no click on a submit button, no Enter, no `submit: true`.
+ * - submit (continue an Easy Apply session) and submit_fresh (open an external form again, fill it
+ *   and send it): the same, except one click on a submit button per attempt.
+ * - all modes: only https on *.linkedin.com, the host of the start URL, known ATS hosts and hosts the
+ *   browser has already been on in this attempt; uploads only from <agentCwd>/files/; only the tools
+ *   listed below (Playwright plus the harmless built-ins StructuredOutput and ToolSearch).
  * A false denial is cheaper than a false submission, so "submit" matches any button with that word.
+ *
+ * Two kinds of submit words. Strong ones (submit, send, absenden…) mean submit on every page. Apply
+ * words (apply, bewerb, postuler, candidat, solicitar) mean submit only on a page outside LinkedIn and
+ * only after the agent has typed, selected, uploaded or clicked a checkbox/radio/switch/option on that
+ * page (same origin + path):
+ * before that "Apply for this job" opens the form, after it the same word sends it. On LinkedIn they
+ * mean nothing: "Easy Apply" opens the dialog and "Apply" leads to the company site.
  *
  * Clicks, typing and selects are judged by the element's real role and name from the page's ARIA
  * snapshot (refs.json, collected by the PostToolUse hook), not by the `element` text the agent writes:
@@ -18,7 +27,7 @@ import type { RefInfo } from './agent-snapshot-refs.js';
  * in a snapshot is denied. The agent's own text is checked too; either match denies.
  */
 
-export const applyModes = ['fill', 'submit'] as const;
+export const applyModes = ['fill', 'submit', 'submit_fresh'] as const;
 export type ApplyMode = typeof applyModes[number];
 
 const playwright = 'mcp__playwright__';
@@ -48,8 +57,12 @@ export const agentFilesDir = '/srv/agent-files/';
 /** One JSON line per tool call, in the attempt's folder (APPLY_GUARD_DIR). */
 export const guardLogFile = 'guard-log.jsonl';
 
-export type GuardState = Readonly<{ submitClicks: number }>;
-export const initialGuardState: GuardState = { submitClicks: 0 };
+export type GuardState = Readonly<{
+  submitClicks: number;
+  /** origin + path of the pages where the agent typed, selected or uploaded in this attempt. */
+  inputPages: readonly string[];
+}>;
+export const initialGuardState: GuardState = { submitClicks: 0, inputPages: [] };
 
 export type GuardDecision = Readonly<{
   allow: boolean;
@@ -66,6 +79,23 @@ export type GuardDecision = Readonly<{
  */
 export const submitWords = /submit|send|отправ|подать|подач|надісл|absenden|envoy|soumet|enviar|invia|verzend|verstur|indienen|wyślij|wyslij/iu;
 
+/**
+ * Words of an "apply" button on company sites and ATS (Apply / Jetzt bewerben / Postuler /
+ * Candidater / Solicitar). Before any input on the page it opens the form, after input it sends it.
+ * Not used on LinkedIn pages, and not for form controls (a checkbox "Candidate privacy policy").
+ */
+export const applyWords = /apply|bewerb|postuler|candidat|solicitar/iu;
+const formControlRoles = new Set(['checkbox', 'radio', 'textbox', 'searchbox', 'combobox', 'listbox', 'option', 'switch', 'spinbutton', 'slider']);
+
+/**
+ * Hosts of applicant tracking systems that need no account; a subdomain matches
+ * (boards.greenhouse.io, jobs.lever.co, acme.recruitee.com…).
+ */
+export const atsDomains = [
+  'greenhouse.io', 'lever.co', 'ashbyhq.com', 'workable.com', 'smartrecruiters.com', 'teamtailor.com',
+  'personio.de', 'personio.com', 'recruitee.com', 'bamboohr.com', 'breezy.hr', 'jobvite.com',
+] as const;
+
 /** `dir` with exactly one trailing slash, after resolving `..`. */
 export function uploadRoot(dir: string): string {
   return `${path.posix.normalize(dir).replace(/\/+$/, '')}/`;
@@ -80,22 +110,41 @@ export const denyReasons = {
   secondSubmit: 'Submit was already pressed once in this run: stop and report the outcome.',
   enter: 'Enter is forbidden (it may submit the form).',
   typeSubmit: 'submit: true is forbidden.',
-  foreignSite: 'Only linkedin.com is allowed. If the job needs an external site, stop and report outcome external.',
+  foreignSite: 'Host not allowed for this attempt. If the application needs another site, stop and report outcome "manual".',
   noUploadDir: 'Uploads are not configured in this run (APPLY_UPLOAD_DIR).',
   unknownRef: 'Take browser_snapshot first: unknown element ref.',
 } as const;
 
 export function parseApplyMode(value: string | undefined): ApplyMode {
   // Anything unknown gets the stricter mode.
-  return value === 'submit' ? 'submit' : 'fill';
+  return value === 'submit' || value === 'submit_fresh' ? value : 'fill';
+}
+
+/** Lower-case host of an https URL; null for anything else (http, about:, not a URL). */
+export function httpsHost(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  let url: URL;
+  try { url = new URL(value); } catch { return null; }
+  return url.protocol === 'https:' && url.hostname ? url.hostname.toLowerCase() : null;
+}
+
+/** `host` is `domain` or its subdomain (the dot boundary keeps evillinkedin.com out). */
+export function isHostIn(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`);
 }
 
 /** True only for https URLs on linkedin.com or its subdomains. */
 export function isLinkedinUrl(value: unknown): boolean {
-  if (typeof value !== 'string') return false;
-  let url: URL;
-  try { url = new URL(value); } catch { return false; }
-  return url.protocol === 'https:' && /(^|\.)linkedin\.com$/.test(url.hostname.toLowerCase());
+  const host = httpsHost(value);
+  return host !== null && isHostIn(host, 'linkedin.com');
+}
+
+/** https on LinkedIn, an ATS, the start URL's host or a host already visited in this attempt. */
+export function isAllowedUrl(value: unknown, context: Pick<GuardContext, 'startHost' | 'visitedHosts'>): boolean {
+  const host = httpsHost(value);
+  if (host === null) return false;
+  return isHostIn(host, 'linkedin.com') || atsDomains.some((domain) => isHostIn(host, domain))
+    || host === context.startHost || context.visitedHosts.includes(host);
 }
 
 /** An absolute path inside `uploadDir` after resolving `..` and repeated slashes. */
@@ -111,6 +160,12 @@ export type GuardContext = Readonly<{
   uploadDir: string | null;
   /** Elements seen in this run's snapshots, by ref. */
   refs: Readonly<Record<string, RefInfo>>;
+  /** origin + path of the current page (from the last tool response); null before the first one. */
+  page: string | null;
+  /** Host of the start URL of this attempt (APPLY_START_URL), null without one. */
+  startHost: string | null;
+  /** https hosts the browser has been on in this attempt (Page URL of tool responses). */
+  visitedHosts: readonly string[];
 }>;
 
 /** Refs an element tool acts on: `target` (current MCP) or `ref`, and every field of fill_form. */
@@ -136,13 +191,35 @@ function agentWords(name: string, input: Record<string, unknown>): string {
 }
 
 const elementTools = new Set(['browser_click', 'browser_type', 'browser_select_option', 'browser_fill_form']);
+/** Tools that put something into the form; after one of them an apply word sends it. */
+const inputTools = new Set(['browser_type', 'browser_select_option', 'browser_fill_form', 'browser_file_upload']);
 
-/** Unknown ref, a ref whose real name has a submit word, or the agent's own words have one. */
-function elementCheck(name: string, input: Record<string, unknown>, refs: GuardContext['refs']): 'unknown' | 'submit' | 'ok' {
-  const known = elementRefs(name, input).map((ref) => (typeof ref === 'string' ? refs[ref] : undefined));
+/**
+ * Unknown ref; a ref whose real name, or the agent's own words, have a submit word; or, for a click
+ * on a page outside LinkedIn that is not a form control, an apply word.
+ */
+function elementCheck(name: string, input: Record<string, unknown>, context: GuardContext): 'unknown' | 'submit' | 'apply' | 'ok' {
+  const known = elementRefs(name, input).map((ref) => (typeof ref === 'string' ? context.refs[ref] : undefined));
   if (known.some((info) => info === undefined)) return 'unknown';
-  const real = known.some((info) => submitWords.test(`${info!.role} ${info!.name} ${info!.text}`));
-  return real || submitWords.test(agentWords(name, input)) ? 'submit' : 'ok';
+  const real = known.map((info) => `${info!.role} ${info!.name} ${info!.text}`);
+  const words = agentWords(name, input);
+  if (real.some((text) => submitWords.test(text)) || submitWords.test(words)) return 'submit';
+  const external = context.page !== null && !isLinkedinUrl(context.page);
+  if (name !== 'browser_click' || !external || known.some((info) => formControlRoles.has(info!.role))) return 'ok';
+  return real.some((text) => applyWords.test(text)) || applyWords.test(words) ? 'apply' : 'ok';
+}
+
+/** Form controls a click changes; such a click is input too (role from the snapshot, not the agent). */
+const clickInputRoles = new Set(['checkbox', 'radio', 'switch', 'option']);
+
+/** State after an allowed call: an input (or a click on a checkbox, radio, switch or option) marks the current page. */
+function afterAllowed(name: string, input: Record<string, unknown>, state: GuardState, context: GuardContext): GuardDecision {
+  const page = context.page;
+  const clickedControl = name === 'browser_click' && elementRefs(name, input)
+    .some((ref) => typeof ref === 'string' && clickInputRoles.has(context.refs[ref]?.role ?? ''));
+  const isInput = clickedControl || (inputTools.has(name) && !(name === 'browser_file_upload' && input.paths === undefined));
+  if (!isInput || page === null || state.inputPages.includes(page)) return { allow: true, state };
+  return { allow: true, state: { ...state, inputPages: [...state.inputPages, page] } };
 }
 
 export function guardDecision(mode: ApplyMode, tool: string, args: unknown, state: GuardState, context: GuardContext): GuardDecision {
@@ -156,9 +233,11 @@ export function guardDecision(mode: ApplyMode, tool: string, args: unknown, stat
 
   if (name === 'browser_type' && input.submit) return deny(denyReasons.typeSubmit, state);
   if (elementTools.has(name)) {
-    const check = elementCheck(name, input, context.refs);
+    const check = elementCheck(name, input, context);
     if (check === 'unknown') return deny(denyReasons.unknownRef, state);
-    if (check === 'submit') {
+    // An apply word sends the form only after input on this page; before it, it opens the form.
+    const typedHere = context.page !== null && state.inputPages.includes(context.page);
+    if (check === 'submit' || (check === 'apply' && typedHere)) {
       // Only a click may be the one submit; typing into or selecting a submit-named element never is.
       if (mode === 'fill' || name !== 'browser_click') return deny(denyReasons.submitInFill, state);
       if (state.submitClicks >= 1) return deny(denyReasons.secondSubmit, state);
@@ -168,11 +247,11 @@ export function guardDecision(mode: ApplyMode, tool: string, args: unknown, stat
 
   switch (name) {
     case 'browser_navigate':
-      if (!isLinkedinUrl(input.url)) return deny(denyReasons.foreignSite, state);
+      if (!isAllowedUrl(input.url, context)) return deny(denyReasons.foreignSite, state);
       break;
     case 'browser_tabs':
       // A new tab may carry its own URL.
-      if (input.url !== undefined && !isLinkedinUrl(input.url)) return deny(denyReasons.foreignSite, state);
+      if (input.url !== undefined && !isAllowedUrl(input.url, context)) return deny(denyReasons.foreignSite, state);
       break;
     case 'browser_file_upload': {
       const paths = input.paths;
@@ -182,5 +261,5 @@ export function guardDecision(mode: ApplyMode, tool: string, args: unknown, stat
       break;
     }
   }
-  return { allow: true, state };
+  return afterAllowed(name, input, state, context);
 }

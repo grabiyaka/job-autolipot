@@ -35,7 +35,7 @@ const request = { prompt: 'Apply to this job: https://www.linkedin.com/jobs/view
 
 const saved = { ...process.env };
 afterEach(() => {
-  for (const key of ['FAKE_CLAUDE_MODE', 'FAKE_CLAUDE_RECORD', 'FAKE_CLAUDE_TOOL', 'CLAUDECODE']) {
+  for (const key of ['FAKE_CLAUDE_MODE', 'FAKE_CLAUDE_RECORD', 'FAKE_CLAUDE_TOOL', 'CLAUDECODE', 'APPLY_START_URL']) {
     if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
   }
 });
@@ -70,7 +70,7 @@ describe('claude agent plugin', () => {
     const { argv, cwd, env } = recorded();
     expect(cwd).toBe(cfg.agentCwd);
     expect(path.dirname(result.runDir)).toBe(path.join(cfg.workDir, 'runs'));
-    expect(env).toEqual({ APPLY_MODE: 'fill', APPLY_GUARD_DIR: result.runDir, APPLY_UPLOAD_DIR: path.join(cfg.agentCwd, 'files'), CLAUDECODE: null });
+    expect(env).toEqual({ APPLY_MODE: 'fill', APPLY_GUARD_DIR: result.runDir, APPLY_UPLOAD_DIR: path.join(cfg.agentCwd, 'files'), APPLY_START_URL: null, CLAUDECODE: null });
     expect(readdirSync(path.join(cfg.agentCwd, 'files'))).toEqual(['CV.pdf']);
     const flag = (name: string) => argv[argv.indexOf(name) + 1];
     expect(argv.slice(0, 2)).toEqual(['-p', request.prompt]);
@@ -101,6 +101,35 @@ describe('claude agent plugin', () => {
     const { argv, env } = recorded();
     expect(argv.slice(-2)).toEqual(['--resume', 'session-1']);
     expect(env.APPLY_MODE).toBe('submit');
+  });
+
+  it('passes submit_fresh and startUrl to the guard; drops an inherited APPLY_START_URL', async () => {
+    fake('success');
+    const startUrl = 'https://boards.greenhouse.io/acme/jobs/1';
+    await createClaudeAgent(config()).run({ ...request, mode: 'submit_fresh', startUrl });
+    expect(recorded().env).toMatchObject({ APPLY_MODE: 'submit_fresh', APPLY_START_URL: startUrl });
+    expect(recorded().argv).not.toContain('--resume');
+
+    process.env.APPLY_START_URL = 'https://evil.test/';
+    await createClaudeAgent(config()).run(request);
+    expect(recorded().env.APPLY_START_URL).toBeNull();
+  });
+
+  it('rejects a start URL that is not https', async () => {
+    fake('success');
+    for (const startUrl of ['http://acme.test/jobs/1', 'acme.test', 'javascript:alert(1)']) {
+      await expect(createClaudeAgent(config()).run({ ...request, startUrl })).rejects.toThrow('https');
+    }
+  });
+
+  it('the generated hook lets the start URL host through and denies other hosts', async () => {
+    const navigate = (url: string) => JSON.stringify({ tool_name: 'mcp__playwright__browser_navigate', tool_input: { url } });
+    fake('hook', { FAKE_CLAUDE_TOOL: navigate('https://careers.acme.test/jobs/1') });
+    const allowed = await createClaudeAgent(config()).run({ ...request, startUrl: 'https://careers.acme.test/jobs/1' });
+    expect(allowed.output).toEqual({ hook: '', status: 0 });
+    fake('hook', { FAKE_CLAUDE_TOOL: navigate('https://other.test/') });
+    const denied = await createClaudeAgent(config()).run({ ...request, startUrl: 'https://careers.acme.test/jobs/1' });
+    expect(JSON.parse((denied.output as { hook: string }).hook).hookSpecificOutput.permissionDecisionReason).toBe(denyReasons.foreignSite);
   });
 
   it('the generated hook blocks Submit in fill and logs it into the result', async () => {
