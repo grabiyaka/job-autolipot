@@ -80,7 +80,7 @@ LinkedIn ─► collect ─► score (qwen) ─► Job-Tracker To Apply ─► a
    отложится (попытка `submitted`, досылается следующим `apply`).
 2. Добавить `illia.herasymets@gmail.com` в LinkedIn: сейчас формы подставляют старый адрес.
 3. Приёмка: 5 Easy Apply подач — ✅ в Telegram (`/pending`) или `npm run apply -- --submit <id>`.
-4. Сохранённый поиск для расписания (`POST /api/searches`, `easyApplyOnly: true`) — без него `/run cycle`
+4. Сохранённый поиск для расписания (в боте `/search …` или `POST /api/searches`, `easyApplyOnly: true`) — без него `/run cycle`
    и cron собирают нечего.
 5. Поставить бота под systemd: `deploy/job-autopilot-bot.service` (сейчас запущен вручную).
 6. Резервные копии БД до миграций: `server/data/job-autopilot.backup-2026-11-04-*.db` — удалить, когда всё ок.

@@ -12,7 +12,7 @@ import type { PipelineTask, Schedule, ScheduleService, TaskOptions, TaskRunStatu
 import type { SearchService } from '../src/searches/SearchService.js';
 import {
   answersText, applyReportLines, helpText, minutesAgo, questionMessage, readyMessage, submitResultText, parseCallback, parseCommand, queuedText, scheduleLine, scheduleSaved, schedulesMessage, searchesMessage,
-  statusText,
+  searchLine, statusText,
 } from './bot-commands.js';
 import type { BotCommand } from './bot-commands.js';
 import { cycleSummaryLines, queuedCount, scoringProblems, scoringSummaryLines, searchReportLines } from './pipeline-cli.js';
@@ -45,7 +45,7 @@ export type PipelinePorts = Readonly<{
 
 export type BotServices = Readonly<{
   jobs: Pick<JobService, 'summary' | 'list'>;
-  searches: Pick<SearchService, 'list' | 'update'>;
+  searches: Pick<SearchService, 'list' | 'create' | 'update' | 'remove'>;
   answers: Readonly<{ list(actor: Actor): Promise<Answer[]> }> & Pick<AnswerApi, 'upsert'>;
   schedules: Pick<ScheduleService,
     'list' | 'put' | 'setEnabled' | 'setEnabledById' | 'remove' | 'find' | 'nextRun' | 'startRun' | 'finishRun' | 'recordBusy' | 'recentRuns'>;
@@ -476,6 +476,10 @@ export class TelegramBot {
         await this.telegram.sendMessage(this.settings.chatId, message.text, { keyboard: message.keyboard });
         return;
       }
+      case 'addSearch': {
+        const search = await searches.create(this.owner, command.search);
+        return this.say(`Поиск добавлен: ✅ ${searchLine(search)}\nСобрать сейчас: /run collect · сбор и оценка: /run cycle · список: /searches`);
+      }
       case 'queued': {
         const page = await jobs.list(this.owner, { status: 'queued', sort: 'score', limit: 10 });
         return this.say(queuedText(page.items));
@@ -507,10 +511,11 @@ export class TelegramBot {
       await this.telegram.answerCallbackQuery(id, action.action === 'delete' ? 'Удалено' : action.action === 'on' ? 'Включено' : 'Выключено');
       return;
     }
-    await searches.update(this.owner, action.id, { enabled: action.enabled });
+    if (action.action === 'delete') await searches.remove(this.owner, action.id);
+    else await searches.update(this.owner, action.id, { enabled: action.action === 'on' });
     const message = searchesMessage(await searches.list(this.owner));
     await this.telegram.editMessageText(this.settings.chatId, messageId, message.text, { keyboard: message.keyboard });
-    await this.telegram.answerCallbackQuery(id, action.enabled ? 'Поиск включён' : 'Поиск выключен');
+    await this.telegram.answerCallbackQuery(id, action.action === 'delete' ? 'Поиск удалён' : action.action === 'on' ? 'Поиск включён' : 'Поиск выключен');
   }
 
   /** Starts a task without waiting for it, so polling (and /stop) goes on; the report comes at the end. */

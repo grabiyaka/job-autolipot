@@ -48,11 +48,25 @@ describe('bot commands', () => {
     for (const name of ['status', 'stop', 'searches', 'queued', 'answers', 'help', 'start']) expect(parseCommand(`/${name}`)).not.toBeNull();
   });
 
+  it('parses /search: keywords, location, title words, Easy Apply by default', () => {
+    expect(parseCommand('/search node.js developer | Remote | +node, typescript | -java,qa')).toEqual({
+      kind: 'addSearch',
+      search: { source: 'linkedin', keywords: 'node.js developer', location: 'Remote', includeTitle: ['node', 'typescript'], excludeTitle: ['java', 'qa'], easyApplyOnly: true },
+    });
+    expect(parseCommand('/search backend | −php | all')).toEqual({
+      kind: 'addSearch',
+      search: { source: 'linkedin', keywords: 'backend', includeTitle: [], excludeTitle: ['php'], easyApplyOnly: false },
+    });
+    expect(parseCommand('/search')).toMatchObject({ kind: 'invalid', message: expect.stringMatching(/^Формат: \/search/) });
+    expect(parseCommand('/search | Remote')).toMatchObject({ kind: 'invalid' });
+    expect(parseCommand('/search node | Dublin | Cork')).toMatchObject({ kind: 'invalid', message: expect.stringMatching(/Две локации/) });
+  });
+
   it('parses button data', () => {
     expect(parseCallback('s:off:abc-1')).toEqual({ kind: 'schedule', action: 'off', id: 'abc-1' });
     expect(parseCallback('s:del:abc')).toEqual({ kind: 'schedule', action: 'delete', id: 'abc' });
-    expect(parseCallback('q:on:abc')).toEqual({ kind: 'search', enabled: true, id: 'abc' });
-    expect(parseCallback('q:del:abc')).toBeNull();
+    expect(parseCallback('q:on:abc')).toEqual({ kind: 'search', action: 'on', id: 'abc' });
+    expect(parseCallback('q:del:abc')).toEqual({ kind: 'search', action: 'delete', id: 'abc' });
     expect(parseCallback('a:ok:app-1')).toEqual({ kind: 'application', action: 'submit', id: 'app-1' });
     expect(parseCallback('a:no:app-1')).toEqual({ kind: 'application', action: 'reject', id: 'app-1' });
     expect(parseCallback('a:del:app-1')).toBeNull();
@@ -197,10 +211,20 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
       },
       searches: {
         list: async () => searches,
+        create: async (_actor, input) => {
+          const created: Search = {
+            id: `search-${searches.length + 1}`, source: input.source, keywords: input.keywords, location: input.location ?? null,
+            includeTitle: [...input.includeTitle ?? []], excludeTitle: [...input.excludeTitle ?? []],
+            easyApplyOnly: input.easyApplyOnly ?? false, enabled: true, createdAt: '', updatedAt: '',
+          };
+          searches = [...searches, created];
+          return created;
+        },
         update: async (_actor, id, change) => {
           searches = searches.map((search) => (search.id === id ? { ...search, enabled: change.enabled ?? search.enabled } : search));
           return searches.find((search) => search.id === id)!;
         },
+        remove: async (_actor, id) => { searches = searches.filter((search) => search.id !== id); },
       },
       answers: {
         list: async () => answers,
@@ -380,6 +404,25 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     await bot.handleUpdate({ update_id: 503, callback_query: { id: 'q4', data: off.data, message: { message_id: 8, chat: { id: chatId } } } });
     expect(searches[0]!.enabled).toBe(false);
     expect(telegram.sent.at(-1)).toEqual({ method: 'answerCallbackQuery', callbackText: 'Поиск выключен' });
+  });
+
+  it('/search adds a saved search, the 🗑 button deletes it', async () => {
+    await say('/search typescript | Remote | +backend | -java');
+    expect(telegram.texts().at(-1)).toMatch(/^Поиск добавлен: ✅ linkedin «typescript» \(Remote\) easy apply \+backend −java/);
+    expect(searches.map((search) => search.keywords)).toEqual(['node.js', 'typescript']);
+
+    await say('/search');
+    expect(telegram.texts().at(-1)).toMatch(/^Формат: \/search &lt;ключевые слова&gt;/);
+
+    await say('/searches');
+    const list = telegram.sent.at(-1)!;
+    expect(list.text).toContain('2. ✅ linkedin «typescript» (Remote)');
+    const remove = list.keyboard![1]![1]!;
+    expect(remove.text).toBe('🗑 2. удалить');
+    await bot.handleUpdate({ update_id: 600, callback_query: { id: 'q5', data: remove.data, message: { message_id: 9, chat: { id: chatId } } } });
+    expect(searches.map((search) => search.keywords)).toEqual(['node.js']);
+    expect(telegram.sent.at(-2)).toMatchObject({ method: 'editMessageText', text: expect.not.stringContaining('typescript') });
+    expect(telegram.sent.at(-1)).toEqual({ method: 'answerCallbackQuery', callbackText: 'Поиск удалён' });
   });
 
   it('/run apply sends forms for ✅ / ❌ and agent questions; ✅ submits, ❌ skips, a reply answers', async () => {

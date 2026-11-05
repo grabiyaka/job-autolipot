@@ -6,7 +6,7 @@ import type { ApplicationView, FillReport, QuestionView, SubmitReport } from '..
 import type { JobStatus, PipelineJob } from '../src/jobs/JobTypes.js';
 import { isPipelineTask, pipelineTasks } from '../src/schedules/ScheduleService.js';
 import type { PipelineTask, ScheduleView, TaskRun, TaskRunStatus, TaskTrigger } from '../src/schedules/ScheduleService.js';
-import type { Search } from '../src/searches/SearchService.js';
+import type { Search, SearchInput } from '../src/searches/SearchService.js';
 
 /**
  * Commands of the Telegram bot and the texts it answers with. Pure: text in, command or message out,
@@ -26,6 +26,7 @@ export type BotCommand =
   | Readonly<{ kind: 'schedule'; task: PipelineTask; cron: string; options: RawOptions }>
   | Readonly<{ kind: 'toggle'; task: PipelineTask; enabled: boolean }>
   | Readonly<{ kind: 'searches' }>
+  | Readonly<{ kind: 'addSearch'; search: SearchInput }>
   | Readonly<{ kind: 'queued' }>
   | Readonly<{ kind: 'answers' }>
   | Readonly<{ kind: 'pending' }>
@@ -66,6 +67,37 @@ export function parseOptions(words: readonly string[]): RawOptions | string {
 
 const taskList = pipelineTasks.join(' | ');
 
+/** Plain text: the bot escapes it. */
+export const searchUsage = 'Формат: /search <ключевые слова> | <локация> | +node,typescript | -java,qa | all\n'
+  + 'Обязательны только ключевые слова. +слова — хотя бы одно должно быть в названии вакансии, -слова — отсеять, '
+  + 'all — не только Easy Apply (по умолчанию только Easy Apply). Пример: /search node.js | Remote | +node,backend | -java';
+
+const termList = (text: string): string[] => text.split(',').map((term) => term.trim()).filter(Boolean);
+
+/**
+ * `/search node.js | Remote | +node,typescript | -java,qa | all`: a saved LinkedIn search. Parts after the
+ * keywords go in any order; a part without a marker is the location. Easy Apply only unless `all`.
+ */
+export function parseSearch(body: string): SearchInput | string {
+  const [keywords = '', ...parts] = body.split('|').map((part) => part.trim());
+  if (!keywords) return searchUsage;
+  let location: string | undefined;
+  let includeTitle: string[] = [];
+  let excludeTitle: string[] = [];
+  let easyApplyOnly = true;
+  for (const part of parts) {
+    if (!part) continue;
+    const lower = part.toLowerCase();
+    if (part.startsWith('+')) includeTitle = [...includeTitle, ...termList(part.slice(1))];
+    else if (part.startsWith('-') || part.startsWith('−')) excludeTitle = [...excludeTitle, ...termList(part.slice(1))];
+    else if (lower === 'all' || lower === 'все') easyApplyOnly = false;
+    else if (lower === 'easy') easyApplyOnly = true;
+    else if (location === undefined) location = part;
+    else return `Две локации: «${location}» и «${part}». ${searchUsage}`;
+  }
+  return { source: 'linkedin', keywords, ...(location ? { location } : {}), includeTitle, excludeTitle, easyApplyOnly };
+}
+
 function task(word: string | undefined, usage: string): PipelineTask | string {
   if (!word) return usage;
   return isPipelineTask(word) ? word : `Неизвестная задача «${word}»: ${taskList}.`;
@@ -89,6 +121,10 @@ export function parseCommand(text: string): BotCommand | null {
       return { kind: 'stop' };
     case 'searches':
       return { kind: 'searches' };
+    case 'search': {
+      const search = parseSearch(trimmed.slice(head.length).trim());
+      return typeof search === 'string' ? invalid(search) : { kind: 'addSearch', search };
+    }
     case 'queued':
       return { kind: 'queued' };
     case 'answers':
@@ -132,7 +168,7 @@ export function parseCommand(text: string): BotCommand | null {
 
 export type BotCallback =
   | Readonly<{ kind: 'schedule'; action: 'on' | 'off' | 'delete'; id: string }>
-  | Readonly<{ kind: 'search'; enabled: boolean; id: string }>
+  | Readonly<{ kind: 'search'; action: 'on' | 'off' | 'delete'; id: string }>
   | Readonly<{ kind: 'application'; action: 'submit' | 'reject'; id: string }>;
 
 /** Callback data must fit 64 bytes: a short prefix and a UUID. */
@@ -142,8 +178,7 @@ export function parseCallback(data: string | undefined): BotCallback | null {
   const match = data?.match(/^([sq]):(on|off|del):([\w-]{1,48})$/);
   if (!match) return null;
   const [, kind, action, id] = match as unknown as [string, 's' | 'q', 'on' | 'off' | 'del', string];
-  if (kind === 's') return { kind: 'schedule', action: action === 'del' ? 'delete' : action, id };
-  return action === 'del' ? null : { kind: 'search', enabled: action === 'on', id };
+  return { kind: kind === 's' ? 'schedule' : 'search', action: action === 'del' ? 'delete' : action, id };
 }
 
 // ── Texts ──
@@ -156,7 +191,8 @@ export const helpText = [
   '/schedule — расписания с кнопками',
   '/schedule cycle 0 9,18 * * * — создать или заменить расписание (новое выключено)',
   '/on cycle · /off cycle — включить или выключить расписание',
-  '/searches — сохранённые поиски с кнопками вкл/выкл',
+  '/searches — сохранённые поиски с кнопками вкл/выкл и 🗑',
+  '/search node.js | Remote | +node,backend | -java — добавить поиск LinkedIn (только Easy Apply; all — все вакансии)',
   '/queued — 10 лучших отобранных',
   '/answers — банк ответов; /answer &lt;вопрос&gt; = &lt;ответ&gt; — добавить',
   '/run apply limit=N — заполнить формы LinkedIn Easy Apply из To Apply; перед Submit агент останавливается',
@@ -244,18 +280,25 @@ export function scheduleSaved(schedule: ScheduleView, created: boolean): string 
 }
 
 export function searchesMessage(searches: readonly Search[]): { text: string; keyboard: InlineKeyboard } {
-  if (!searches.length) return { text: 'Сохранённых поисков нет: добавьте их через POST /api/searches.', keyboard: [] };
-  const name = (search: Search) => `${search.source} «${search.keywords}»${search.location ? ` (${search.location})` : ''}`;
+  if (!searches.length) return { text: 'Сохранённых поисков нет. Добавить: /search node.js | Remote', keyboard: [] };
   return {
-    text: ['<b>Сохранённые поиски</b>', ...searches.map((search, index) => {
-      const flags = [search.easyApplyOnly ? 'easy apply' : '', search.includeTitle.length ? `+${search.includeTitle.join(',')}` : '',
-        search.excludeTitle.length ? `−${search.excludeTitle.join(',')}` : ''].filter(Boolean).join(' ');
-      return `${index + 1}. ${search.enabled ? '✅' : '⏸'} ${escapeHtml(name(search))}${flags ? ` ${escapeHtml(flags)}` : ''}`;
-    })].join('\n'),
-    keyboard: searches.map((search, index) => [search.enabled
-      ? { text: `⏸ ${index + 1}. выключить`, data: `q:off:${search.id}` }
-      : { text: `▶️ ${index + 1}. включить`, data: `q:on:${search.id}` }]),
+    text: ['<b>Сохранённые поиски</b>', ...searches.map((search, index) =>
+      `${index + 1}. ${search.enabled ? '✅' : '⏸'} ${searchLine(search)}`), '', 'Добавить: /search'].join('\n'),
+    keyboard: searches.map((search, index) => [
+      search.enabled
+        ? { text: `⏸ ${index + 1}. выключить`, data: `q:off:${search.id}` }
+        : { text: `▶️ ${index + 1}. включить`, data: `q:on:${search.id}` },
+      { text: `🗑 ${index + 1}. удалить`, data: `q:del:${search.id}` },
+    ]),
   };
+}
+
+/** «linkedin «node.js» (Remote) easy apply +node −java», escaped. */
+export function searchLine(search: Search): string {
+  const name = `${search.source} «${search.keywords}»${search.location ? ` (${search.location})` : ''}`;
+  const flags = [search.easyApplyOnly ? 'easy apply' : '', search.includeTitle.length ? `+${search.includeTitle.join(',')}` : '',
+    search.excludeTitle.length ? `−${search.excludeTitle.join(',')}` : ''].filter(Boolean).join(' ');
+  return `${escapeHtml(name)}${flags ? ` ${escapeHtml(flags)}` : ''}`;
 }
 
 export function queuedText(jobs: readonly Pick<PipelineJob, 'score' | 'title' | 'company' | 'url'>[], heading = 'Лучшие отобранные'): string {
