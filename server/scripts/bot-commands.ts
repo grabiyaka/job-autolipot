@@ -226,6 +226,37 @@ export type StatusData = Readonly<{
   timezone: string;
 }>;
 
+/** What the running task is doing, collected by the runner from its output. */
+export type TaskProgress = Readonly<{
+  task: string;
+  startedAt: Date;
+  stage: 'collect' | 'score' | 'apply' | null;
+  stageStartedAt: Date | null;
+  /** The last line of the collector: «linkedin «node.js» стр. 3: карточек 25, новых 12». */
+  collectLine: string | null;
+  scored: number;
+  queued: number;
+  /** The last scored job: «− 35 Senior Engineer — Acme». */
+  lastScored: string | null;
+}>;
+
+const stageNames: Record<NonNullable<TaskProgress['stage']>, string> = { collect: 'сбор', score: 'оценка', apply: 'подача' };
+
+/** Plain text (statusText escapes it): the task, its stage and the last step. */
+export function progressText(progress: TaskProgress, now: Date): string {
+  const head = `${progress.task}, запущено ${minutesAgo(progress.startedAt, now)} мин назад`;
+  if (!progress.stage) return head;
+  const stage = `этап: ${stageNames[progress.stage]}${progress.stageStartedAt ? ` (${minutesAgo(progress.stageStartedAt, now)} мин)` : ''}`;
+  const details: string[] = [];
+  if (progress.stage === 'collect') details.push(progress.collectLine ?? 'открываю поиск…');
+  if (progress.stage === 'score') {
+    details.push(`оценено ${progress.scored}, в queued ${progress.queued}; остаток — found выше`);
+    if (progress.lastScored) details.push(`последняя: ${progress.lastScored}`);
+  }
+  if (progress.stage === 'apply') details.push('агент заполняет формы; итог придёт отчётом');
+  return [`${head}, ${stage}`, ...details.map((line) => `  ${line}`)].join('\n');
+}
+
 export function runLine(run: TaskRun, timezone: string): string {
   const first = run.summary?.split('\n').find((line) => line.trim() && line.trim() !== 'Итог цикла:')?.trim();
   return `${statusMarks[run.status]} ${localTime(run.startedAt, timezone)} ${run.task} ${triggerNames[run.trigger]}`

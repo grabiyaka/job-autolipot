@@ -63,7 +63,7 @@ export function createBot(settings: BotSettings) {
     pipeline: {
       trackerConfigured: settings.tracker !== null,
       lockBrowser: (task: string) => acquireBrowserLock({ task: `bot:${task}` }),
-      openCollector: () => createCollector(settings.databaseUrl, settings.browserSocket, settings.log),
+      openCollector: (log: Logger = settings.log) => createCollector(settings.databaseUrl, settings.browserSocket, log),
       openScorer: () => createScorer(settings.databaseUrl, { ollama: settings.ollama, tracker: settings.tracker }),
     },
     /**

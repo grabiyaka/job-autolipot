@@ -151,6 +151,7 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
   let schedules: ScheduleService;
   // What the fake pipeline does and saw.
   let collectGate: ReturnType<typeof gate> | null;
+  let scoreGate: ReturnType<typeof gate> | null;
   let collectSignals: AbortSignal[];
   let scoreCalls: { ownerId: string; options: ScoringOptions }[];
   let searches: Search[];
@@ -184,6 +185,7 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     timer = fakeTimer();
     telegram = fakeTelegram();
     collectGate = null;
+    scoreGate = null;
     collectSignals = [];
     scoreCalls = [];
     trackerConfigured = true;
@@ -239,10 +241,11 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
       pipeline: {
         get trackerConfigured() { return trackerConfigured; },
         lockBrowser: (task) => acquireBrowserLock({ task: `bot:${task}`, path: lockPath }),
-        openCollector: () => ({
+        openCollector: (log) => ({
           searches: {
             runSaved: async (options) => {
               collectSignals.push(options.signal);
+              log?.info('linkedin «node.js» стр. 2: карточек 25, новых 8');
               if (collectGate) await collectGate.promise;
               return [searchReport({ ownerId: options.ownerId!, stopped: options.signal.aborted ? 'aborted' : 'known' })];
             },
@@ -253,7 +256,13 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
         }),
         openScorer: () => ({
           scoring: {
-            scoreFound: async (ownerId, options) => { scoreCalls.push({ ownerId, options }); return scoringReport(); },
+            scoreFound: async (ownerId, options) => {
+              scoreCalls.push({ ownerId, options });
+              options.onJob?.({ jobId: 'j1', title: 'Node <Engineer>', company: 'Acme', outcome: 'queued', score: 88, why: 'fits' });
+              options.onJob?.({ jobId: 'j3', title: 'Java Dev', company: 'Gamma', outcome: 'rejected', score: 20, why: 'java' });
+              if (scoreGate) await scoreGate.promise;
+              return scoringReport();
+            },
           },
           close: async () => {},
         }),
@@ -315,7 +324,8 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     expect(scoreCalls).toEqual([]);
 
     await say('/status');
-    expect(telegram.texts()[2]).toContain('<b>Сейчас</b>: занято: collect, запущено 3 мин назад');
+    expect(telegram.texts()[2]).toContain('<b>Сейчас</b>: collect, запущено 3 мин назад, этап: сбор (3 мин)\n'
+      + '  linkedin «node.js» стр. 2: карточек 25, новых 8');
 
     await say('/stop');
     expect(telegram.texts()[3]).toMatch(/Останавливаю <b>collect<\/b>/);
@@ -329,6 +339,22 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
 
     await say('/stop');
     expect(telegram.texts()[5]).toBe('Сейчас ничего не выполняется.');
+  });
+
+  it('/status during a cycle shows the scoring stage with counts and the last job', async () => {
+    scoreGate = gate();
+    await say('/run cycle');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    now = new Date('2026-11-04T10:02:00Z');
+    await say('/status');
+    const status = telegram.texts().at(-1)!;
+    expect(status).toContain('<b>Сейчас</b>: cycle, запущено 2 мин назад, этап: оценка (2 мин)\n'
+      + '  оценено 2, в queued 1; остаток — found выше\n'
+      + '  последняя: − 20 Java Dev — Gamma');
+    scoreGate.open();
+    await bot.settled();
+    await say('/status');
+    expect(telegram.texts().at(-1)).toContain('<b>Сейчас</b>: ничего не выполняется');
   });
 
   it('sees the browser lock of a CLI run', async () => {

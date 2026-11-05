@@ -1,6 +1,6 @@
 import { BrowserBusyError } from '../plugins/browser-lock.js';
 import type { BrowserLock } from '../plugins/browser-lock.js';
-import type { ScoringReport, ScoringService } from '../src/scoring/ScoringService.js';
+import type { ScoringLine, ScoringReport, ScoringService } from '../src/scoring/ScoringService.js';
 import type { SearchFieldsInput } from '../src/searches/SearchRules.js';
 import type { SearchRunReport, SearchService } from '../src/searches/SearchService.js';
 import { BrowserError } from '../src/searches/SearchTypes.js';
@@ -14,7 +14,12 @@ import { cliStopWording } from './pipeline-cli.js';
  * exit code or the report. Only the narrow parts of the composition handles are used, so tests pass fakes.
  */
 
-export type PipelineOutput = Readonly<{ line(text: string): void; warn(text: string): void }>;
+/** Where a run is now, for a caller that shows progress (the bot's /status); the CLI does not listen. */
+export type PipelineStep =
+  | Readonly<{ kind: 'stage'; stage: 'collect' | 'score' }>
+  | Readonly<{ kind: 'scored'; line: ScoringLine }>;
+
+export type PipelineOutput = Readonly<{ line(text: string): void; warn(text: string): void; step?(step: PipelineStep): void }>;
 /** The CLI's output: warnings go to stderr with «! ». */
 export const consoleOutput: PipelineOutput = {
   line: (text) => console.log(text),
@@ -41,6 +46,7 @@ export type CollectInput = Readonly<{
 export async function collectJobs(
   collector: CollectorPort, input: CollectInput, out: PipelineOutput, wording: StopWording = cliStopWording,
 ): Promise<{ reports: SearchRunReport[]; failed: boolean }> {
+  out.step?.({ kind: 'stage', stage: 'collect' });
   const reports = input.adHoc
     ? [await collector.searches.runAdHoc(input.ownerId!, input.adHoc, { signal: input.signal, dryRun: input.dryRun })]
     : await collector.searches.runSaved({
@@ -72,13 +78,14 @@ export async function scoreOwners(
   const reports: ScoringReport[] = [];
   const skippedOwners: { email: string; reason: string }[] = [];
   let failed = false;
+  out.step?.({ kind: 'stage', stage: 'score' });
   if (!owners.length && announceEmpty) out.line('Активных пользователей нет.');
   for (const owner of owners) {
     if (signal.aborted) break;
     out.line(`\n${owner.email}`);
     const report = await scorer.scoring.scoreFound(owner.id, {
       ...tuning, dryRun, push, signal,
-      onJob: (line) => out.line(`  ${scoringLine(line)}`),
+      onJob: (line) => { out.line(`  ${scoringLine(line)}`); out.step?.({ kind: 'scored', line }); },
     });
     if (report.stopped === 'profile') {
       const reason = profileSkip(report);
@@ -125,6 +132,7 @@ export async function runCycle(input: CycleInput, out: PipelineOutput, wording: 
 
   // ── 1. Сбор ──
   out.line('== Сбор ==');
+  out.step?.({ kind: 'stage', stage: 'collect' });
   let collect: CycleStage<CycleCollect>;
   let lock: BrowserLock | null = null;
   let busy: string | null = null;
@@ -171,6 +179,7 @@ export async function runCycle(input: CycleInput, out: PipelineOutput, wording: 
 
   // ── 2. Отбор и 3. отправка в Job-Tracker (внутри scoreFound) ──
   out.line('\n== Отбор ==');
+  out.step?.({ kind: 'stage', stage: 'score' });
   let score: CycleStage<CycleScore>;
   const stopReason = input.stopped();
   if (stopReason) {

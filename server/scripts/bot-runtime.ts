@@ -9,12 +9,14 @@ import type { ApplicationApi, ApplicationView, QuestionView } from '../src/appli
 import type { JobService } from '../src/jobs/JobService.js';
 import { DEFAULT_TASK_MINUTES, taskOptions } from '../src/schedules/ScheduleService.js';
 import type { PipelineTask, Schedule, ScheduleService, TaskOptions, TaskRunStatus, TaskTrigger } from '../src/schedules/ScheduleService.js';
+import type { ScoringLine } from '../src/scoring/ScoringService.js';
 import type { SearchService } from '../src/searches/SearchService.js';
+import type { Logger } from '../src/searches/SearchTypes.js';
 import {
-  answersText, applyReportLines, helpText, minutesAgo, questionMessage, readyMessage, submitResultText, parseCallback, parseCommand, queuedText, scheduleLine, scheduleSaved, schedulesMessage, searchesMessage,
+  answersText, applyReportLines, helpText, minutesAgo, progressText, questionMessage, readyMessage, submitResultText, parseCallback, parseCommand, queuedText, scheduleLine, scheduleSaved, schedulesMessage, searchesMessage,
   searchLine, statusText,
 } from './bot-commands.js';
-import type { BotCommand } from './bot-commands.js';
+import type { BotCommand, TaskProgress } from './bot-commands.js';
 import { cycleSummaryLines, queuedCount, scoringProblems, scoringSummaryLines, searchReportLines } from './pipeline-cli.js';
 import type { CycleScore, CycleStage, StopWording } from './pipeline-cli.js';
 import { collectJobs, runCycle, scoreOwners } from './pipeline-tasks.js';
@@ -39,7 +41,8 @@ export type PipelinePorts = Readonly<{
   trackerConfigured: boolean;
   /** Throws BrowserBusyError when another task of this app holds the agent Chromium. */
   lockBrowser(task: string): BrowserLock;
-  openCollector(): CollectorPort;
+  /** `log` gets the collector's page lines (the bot keeps the last one for /status). */
+  openCollector(log?: Logger): CollectorPort;
   openScorer(): ScorerPort & Readonly<{ close(): Promise<void> }>;
 }>;
 
@@ -72,7 +75,11 @@ export type TaskOutcome = Readonly<{
   apply?: Readonly<{ ready: ApplicationView[]; questions: QuestionView[] }>;
 }>;
 
-type Current = { task: string; trigger: TaskTrigger; startedAt: Date; controller: AbortController };
+type Current = { task: string; trigger: TaskTrigger; startedAt: Date; controller: AbortController; progress: TaskProgress };
+
+const scoredMarks: Record<ScoringLine['outcome'], string> = { queued: '+', rejected: '−', skipped: '=', changed: '~', error: '!' };
+const scoredName = (line: ScoringLine): string =>
+  `${scoredMarks[line.outcome]} ${'score' in line ? `${line.score} ` : ''}${line.title} — ${line.company}`;
 
 export class TaskRunner {
   private current: Current | null = null;
@@ -88,6 +95,44 @@ export class TaskRunner {
   busyText(): string | null {
     const current = this.current;
     return current ? `занято: ${current.task}, запущено ${minutesAgo(current.startedAt, this.now())} мин назад` : null;
+  }
+
+  /** For /status: the running task with its stage and last step (plain text), or null when idle. */
+  progressText(): string | null {
+    return this.current ? progressText(this.current.progress, this.now()) : null;
+  }
+
+  private start(task: string, trigger: TaskTrigger): Current {
+    const startedAt = this.now();
+    const progress: TaskProgress = {
+      task, startedAt, stage: task === 'apply' ? 'apply' : null, stageStartedAt: task === 'apply' ? startedAt : null,
+      collectLine: null, scored: 0, queued: 0, lastScored: null,
+    };
+    this.current = { task, trigger, startedAt, controller: new AbortController(), progress };
+    return this.current;
+  }
+
+  /** The run's output: printed as before, and every step updates the progress /status shows. */
+  private tracked(current: Current): { out: PipelineOutput; log: Logger } {
+    const update = (change: Partial<TaskProgress>) => { current.progress = { ...current.progress, ...change }; };
+    return {
+      out: {
+        line: this.out.line,
+        warn: this.out.warn,
+        step: (step) => {
+          if (step.kind === 'stage') {
+            if (current.progress.stage !== step.stage) update({ stage: step.stage, stageStartedAt: this.now() });
+            return;
+          }
+          const { scored, queued } = current.progress;
+          update({ scored: scored + 1, queued: queued + (step.line.outcome === 'queued' ? 1 : 0), lastScored: scoredName(step.line) });
+        },
+      },
+      log: {
+        info: (text) => { this.out.line(text); update({ collectLine: text }); },
+        warn: (text) => { this.out.warn(text); update({ collectLine: `⚠️ ${text}` }); },
+      },
+    };
   }
 
   /** Aborts the running task; it finishes the current page or job first. Returns its name, null when idle. */
@@ -112,14 +157,13 @@ export class TaskRunner {
       }
     }
 
-    const controller = new AbortController();
-    const startedAt = this.now();
-    this.current = { task, trigger, startedAt, controller };
+    const current = this.start(task, trigger);
+    const { startedAt } = current;
     let runId: string | null = null;
     let outcome: Omit<TaskOutcome, 'task' | 'trigger' | 'minutes'>;
     try {
       runId = (await this.services.schedules.startRun(this.owner, task, trigger, scheduleId)).id;
-      outcome = await this.execute(task, options, controller);
+      outcome = await this.execute(task, options, current);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (error instanceof BrowserBusyError) {
@@ -147,8 +191,7 @@ export class TaskRunner {
    */
   async exclusive<T>(label: string, action: (signal: AbortSignal) => Promise<T>): Promise<{ result: T } | null> {
     if (this.current) return null;
-    const controller = new AbortController();
-    this.current = { task: label, trigger: 'manual', startedAt: this.now(), controller };
+    const { controller } = this.start(label, 'manual');
     try {
       return { result: await action(controller.signal) };
     } finally {
@@ -166,8 +209,10 @@ export class TaskRunner {
     return { task, trigger, status: 'busy', lines: [text], queued: 0, problems: true, minutes: 0 };
   }
 
-  private async execute(task: PipelineTask, options: TaskOptions, controller: AbortController): Promise<Omit<TaskOutcome, 'task' | 'trigger' | 'minutes'>> {
+  private async execute(task: PipelineTask, options: TaskOptions, current: Current): Promise<Omit<TaskOutcome, 'task' | 'trigger' | 'minutes'>> {
     const { pipeline } = this.services;
+    const { controller } = current;
+    const { out, log } = this.tracked(current);
     const minutes = options.maxMinutes ?? DEFAULT_TASK_MINUTES;
     const deadline = AbortSignal.timeout(minutes * 60_000);
     const signal = AbortSignal.any([controller.signal, deadline]);
@@ -191,11 +236,11 @@ export class TaskRunner {
     }
 
     if (task === 'collect') {
-      const collector = pipeline.openCollector();
+      const collector = pipeline.openCollector(log);
       try {
         const run = await collectJobs(collector, {
           adHoc: null, ownerId: this.owner.id, signal, dryRun: false, easyApplyOnly: options.easyApply ?? false,
-        }, this.out, botStopWording);
+        }, out, botStopWording);
         const lines = run.reports.length
           ? run.reports.flatMap((report) => searchReportLines(report, false, botStopWording))
           : ['Включённых сохранённых поисков нет: /searches'];
@@ -209,7 +254,7 @@ export class TaskRunner {
         if (!pipeline.trackerConfigured) {
           return { status: 'error', lines: ['Job-Tracker не настроен (JOB_TRACKER_URL, JOB_TRACKER_TOKEN): профиль для оценки берётся оттуда.'], queued: 0, problems: true };
         }
-        const run = await scoreOwners(scorer, [this.owner], { ...scoreInput, signal, namedOwner: true, announceEmpty: false }, this.out, botStopWording);
+        const run = await scoreOwners(scorer, [this.owner], { ...scoreInput, signal, namedOwner: true, announceEmpty: false }, out, botStopWording);
         const stage: CycleStage<CycleScore> = { ran: true, result: run.result };
         const lines = run.result.reports.length
           ? run.result.reports.flatMap((report) => [
@@ -223,9 +268,9 @@ export class TaskRunner {
         owner: this.owner, adHoc: null, skipCollect: options.skipCollect ?? false, easyApplyOnly: options.easyApply ?? false,
         score: scoreInput, signal, stopped, trackerConfigured: pipeline.trackerConfigured,
         lockBrowser: () => pipeline.lockBrowser('cycle'),
-        openCollector: () => pipeline.openCollector(),
+        openCollector: () => pipeline.openCollector(log),
         scorer, activeUsers: async () => [this.owner],
-      }, this.out, botStopWording);
+      }, out, botStopWording);
       const collectFailed = result.collect.ran && result.collect.result.reports.some((report) => report.stopped === 'error');
       return {
         status: finalStatus(result.failed),
@@ -438,7 +483,7 @@ export class TelegramBot {
       case 'status': {
         const summary = await jobs.summary(this.owner);
         return this.say(statusText({
-          ...summary, current: this.runner.busyText(), runs: await schedules.recentRuns(this.owner, 5),
+          ...summary, current: this.runner.progressText(), runs: await schedules.recentRuns(this.owner, 5),
           schedules: await schedules.list(this.owner), timezone: this.settings.timezone,
         }));
       }
