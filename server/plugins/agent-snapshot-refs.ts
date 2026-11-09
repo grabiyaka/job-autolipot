@@ -89,6 +89,30 @@ export function responseText(response: unknown, depth = 0): string {
   return '';
 }
 
+export type ResponseImage = Readonly<{ data: string; extension: 'png' | 'jpeg' | 'webp' }>;
+
+const imageExtensions: Readonly<Record<string, ResponseImage['extension']>> = {
+  'image/png': 'png', 'image/jpeg': 'jpeg', 'image/jpg': 'jpeg', 'image/webp': 'webp',
+};
+
+/**
+ * Base64 images of a tool response: MCP blocks `{type: "image", data, mimeType}` and Anthropic blocks
+ * `{type: "image", source: {type: "base64", data, media_type}}`, at any depth (the hook's `tool_response`
+ * may wrap them). Other image types are skipped.
+ */
+export function responseImages(response: unknown, depth = 0): ResponseImage[] {
+  if (depth > 5 || response === null || typeof response !== 'object') return [];
+  if (Array.isArray(response)) return response.flatMap((item) => responseImages(item, depth + 1));
+  const record = response as Record<string, unknown>;
+  if (record.type === 'image') {
+    const source = typeof record.source === 'object' && record.source !== null ? record.source as Record<string, unknown> : record;
+    const data = source.data;
+    const extension = imageExtensions[String(source.mimeType ?? source.media_type ?? '').toLowerCase()];
+    return typeof data === 'string' && data.length > 0 && extension ? [{ data, extension }] : [];
+  }
+  return Object.values(record).flatMap((value) => responseImages(value, depth + 1));
+}
+
 /** origin + path from the "- Page URL: …" line of a response, or null. */
 export function responsePage(text: string): string | null {
   const url = /^- Page URL: (\S+)/m.exec(text)?.[1];

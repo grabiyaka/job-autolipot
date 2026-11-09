@@ -1,4 +1,7 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import type { Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -21,7 +24,9 @@ describe('Telegram plugin against a fake Bot API', () => {
       let body = '';
       request.on('data', (chunk: Buffer) => { body += chunk.toString(); });
       request.on('end', () => {
-        const entry = { method: request.method ?? '', path: request.url ?? '', body: body ? JSON.parse(body) as Record<string, unknown> : {} };
+        // File uploads come as multipart: their raw text is kept for the test to look into.
+        const parsed = !body ? {} : request.headers['content-type']?.includes('json') ? JSON.parse(body) as Record<string, unknown> : { multipart: body };
+        const entry = { method: request.method ?? '', path: request.url ?? '', body: parsed };
         seen.push(entry);
         handler(entry, response);
       });
@@ -56,6 +61,12 @@ describe('Telegram plugin against a fake Bot API', () => {
     const updates = await client().getUpdates(5, { timeoutSeconds: 0 });
     expect(updates).toEqual([{ update_id: 7, message: { message_id: 1, chat: { id: 42 }, date: 1, text: '/status' } }]);
     expect(seen[0]).toMatchObject({ method: 'POST', path: `/bot${token}/getUpdates`, body: { offset: 5, timeout: 0, allowed_updates: ['message', 'callback_query'] } });
+  });
+
+  it('sets the «/» menu with setMyCommands', async () => {
+    handler = (_request, response) => json(response, 200, { ok: true, result: true });
+    await client().setMyCommands([{ command: 'status', description: 'Статус' }]);
+    expect(seen[0]).toMatchObject({ path: `/bot${token}/setMyCommands`, body: { commands: [{ command: 'status', description: 'Статус' }] } });
   });
 
   it('waits retry_after on 429 and tries again', async () => {
@@ -117,6 +128,35 @@ describe('Telegram plugin against a fake Bot API', () => {
     expect(seen.map((request) => request.body.text).join('\n')).toBe(long);
     expect(seen.at(-1)!.body).toMatchObject({ parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: 'вкл', callback_data: 's:on:1' }]] } });
     expect(seen[0]!.body.reply_markup).toBeUndefined();
+  });
+
+  it('uploads screenshots: one as sendPhoto, more as albums of ten with the caption on the first', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'tg-photos-'));
+    try {
+      const files = Array.from({ length: 11 }, (_, index) => {
+        const file = path.join(dir, `${String(index + 1).padStart(3, '0')}.png`);
+        writeFileSync(file, `png-${index + 1}`);
+        return file;
+      });
+      handler = (_request, response) => json(response, 200, { ok: true, result: [] });
+      await client().sendPhotos(42, files, 'Node &lt;Dev&gt; — Acme');
+      expect(seen.map((item) => item.path)).toEqual([`/bot${token}/sendMediaGroup`, `/bot${token}/sendPhoto`]);
+      const album = String(seen[0]!.body.multipart);
+      expect(album).toContain('"media":"attach://p0","caption":"Node &lt;Dev&gt; — Acme","parse_mode":"HTML"');
+      expect(album).toContain('attach://p9');
+      expect(album).toContain('png-10');
+      expect(album).not.toContain('png-11');
+      const single = String(seen[1]!.body.multipart);
+      expect(single).toContain('png-11');
+      expect(single).not.toContain('caption');
+
+      seen = [];
+      await client().sendPhotos(42, [files[0]!], 'one');
+      expect(seen.map((item) => item.path)).toEqual([`/bot${token}/sendPhoto`]);
+      expect(String(seen[0]!.body.multipart)).toMatch(/name="caption"\r\n\r\none/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('treats "message is not modified" on edit as success', async () => {

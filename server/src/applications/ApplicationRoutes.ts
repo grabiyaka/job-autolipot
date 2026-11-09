@@ -27,7 +27,7 @@ const applicationSchema = { type: 'object', additionalProperties: false, require
 
 const questionProperties = {
   id: { type: 'string' }, applicationId: { type: 'string' }, jobId: { type: 'string' }, jobTitle: { type: 'string' }, company: { type: 'string' },
-  text: { type: 'string' }, answer: nullableText, status: { type: 'string', enum: questionStatuses }, telegramMessageId: nullableText,
+  applyUrl: { type: 'string' }, text: { type: 'string' }, answer: nullableText, status: { type: 'string', enum: questionStatuses }, telegramMessageId: nullableText,
   createdAt: date, answeredAt: nullableDate,
 } as const;
 const questionSchema = { type: 'object', additionalProperties: false, required: Object.keys(questionProperties), properties: questionProperties } as const;

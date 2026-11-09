@@ -30,6 +30,7 @@
     "browser:check": "npm --prefix server run browser:check --",
     "answers": "npm --prefix server run answers --",
     "bot": "npm --prefix server run bot --",
-    "apply": "npm --prefix server run apply --"
+    "apply": "npm --prefix server run apply --",
+    "autoapply": "npm --prefix server run autoapply --"
   }
 }

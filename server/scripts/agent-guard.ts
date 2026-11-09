@@ -1,8 +1,8 @@
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { guardDecision, guardLogFile, httpsHost, initialGuardState, parseApplyMode } from '../plugins/agent-guard-rules.js';
+import { guardDecision, guardLogFile, httpsHost, initialGuardState, parseApplyMode, screenshotsDir } from '../plugins/agent-guard-rules.js';
 import type { GuardContext, GuardDecision, GuardState } from '../plugins/agent-guard-rules.js';
-import { emptyRefIndex, responseText, updateRefIndex } from '../plugins/agent-snapshot-refs.js';
+import { emptyRefIndex, responseImages, responseText, updateRefIndex } from '../plugins/agent-snapshot-refs.js';
 import type { RefIndex } from '../plugins/agent-snapshot-refs.js';
 
 /**
@@ -56,16 +56,34 @@ function writeRefs(dir: string, index: RefIndex): void {
   renameSync(temporary, path.join(dir, refsFile));
 }
 
-/** PostToolUse: remember the refs of this response; log a short form of it. */
+/**
+ * Saves the images of a browser_take_screenshot response as <dir>/screenshots/001.png, 002.jpeg… for the
+ * owner's report; returns how many were saved. The number continues after the files already there.
+ */
+function saveScreenshots(dir: string, response: unknown): number {
+  const images = responseImages(response);
+  if (!images.length) return 0;
+  const folder = path.join(dir, screenshotsDir);
+  mkdirSync(folder, { recursive: true });
+  let next = readdirSync(folder).length + 1;
+  for (const image of images) {
+    writeFileSync(path.join(folder, `${String(next).padStart(3, '0')}.${image.extension}`), Buffer.from(image.data, 'base64'), { flag: 'wx' });
+    next++;
+  }
+  return images.length;
+}
+
+/** PostToolUse: remember the refs of this response (and save a screenshot); log a short form of it. */
 function afterTool(dir: string, input: Readonly<{ tool_name?: unknown; tool_response?: unknown }>, log: (entry: Record<string, unknown>) => void): void {
   const tool = String(input.tool_name ?? '');
   if (!tool.startsWith('mcp__playwright__')) return;
   const before = readRefs(dir);
   const after = updateRefIndex(before, tool, input.tool_response);
   writeRefs(dir, after);
+  const images = tool.endsWith('browser_take_screenshot') ? saveScreenshots(dir, input.tool_response) : 0;
   const text = responseText(input.tool_response);
   log({
-    event: 'post', tool, page: after.page, refs: Object.keys(after.refs).length,
+    event: 'post', tool, page: after.page, refs: Object.keys(after.refs).length, ...(images ? { images } : {}),
     response: text.length > maxLoggedArgs ? `${text.slice(0, maxLoggedArgs)}…` : text,
   });
 }

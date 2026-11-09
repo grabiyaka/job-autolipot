@@ -38,6 +38,8 @@ export type ApplyAgentResult = AgentSpend & Readonly<{
   toolCalls: AgentToolCall[];
   /** Where the run's files (system prompt, guard log) are kept. */
   runDir: string | null;
+  /** Image files of the screenshots the agent took, in order; empty when it took none (or they could not be saved). */
+  screenshots: string[];
 }>;
 
 /** The agent failed (no `claude`, timeout, no answer); what it already spent is still counted. */
@@ -46,7 +48,9 @@ export class ApplyAgentError extends Error {
   constructor(
     message: string,
     readonly spend: AgentSpend,
-    readonly details: Readonly<{ sessionId?: string; runDir?: string; toolCalls?: AgentToolCall[]; aborted?: boolean; unavailable?: boolean }> = {},
+    readonly details: Readonly<{
+      sessionId?: string; runDir?: string; toolCalls?: AgentToolCall[]; screenshots?: string[]; aborted?: boolean; unavailable?: boolean;
+    }> = {},
   ) {
     super(message);
   }
@@ -68,4 +72,9 @@ export type ApplySettings = Readonly<{
   maxPerRun: number;
   /** APPLY_MAX_USD_PER_DAY in micro-dollars. */
   maxMicrosPerDay: number;
+  /**
+   * APPLY_AUTO_SUBMIT: the fill run sends the form itself (one send click, guard mode submit_fresh)
+   * instead of stopping before Submit and waiting for ✅.
+   */
+  autoSubmit: boolean;
 }>;

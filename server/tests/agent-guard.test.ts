@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -372,6 +372,25 @@ describe('agent-guard hook script', () => {
     return dir;
   };
   const denied = (out: string) => JSON.parse(out).hookSpecificOutput as { permissionDecision: string; permissionDecisionReason: string };
+
+  it('saves the images of browser_take_screenshot in order, in both block forms', () => {
+    const dir = attempt();
+    const png = Buffer.from('fake-png').toString('base64');
+    const jpeg = Buffer.from('fake-jpeg').toString('base64');
+    const shot = (response: unknown) => ({ hook_event_name: 'PostToolUse', tool_name: pw('browser_take_screenshot'), tool_input: {}, tool_response: response });
+    expect(hook(shot([{ type: 'text', text: 'Took the viewport screenshot' }, { type: 'image', data: png, mimeType: 'image/png' }]), { APPLY_GUARD_DIR: dir })).toBe('');
+    expect(hook(shot({ content: [{ type: 'image', source: { type: 'base64', data: jpeg, media_type: 'image/jpeg' } }] }), { APPLY_GUARD_DIR: dir })).toBe('');
+    // No image (the browser timed out): nothing saved, no error.
+    expect(hook(shot([{ type: 'text', text: '### Error\nTimeoutError' }]), { APPLY_GUARD_DIR: dir })).toBe('');
+    // A snapshot's image-like data is not a screenshot.
+    expect(hook({ ...shot([{ type: 'image', data: png, mimeType: 'image/png' }]), tool_name: pw('browser_snapshot') }, { APPLY_GUARD_DIR: dir })).toBe('');
+    const folder = path.join(dir, 'screenshots');
+    expect(readdirSync(folder)).toEqual(['001.png', '002.jpeg']);
+    expect(readFileSync(path.join(folder, '001.png'), 'utf8')).toBe('fake-png');
+    expect(readFileSync(path.join(folder, '002.jpeg'), 'utf8')).toBe('fake-jpeg');
+    const posts = readFileSync(path.join(dir, 'guard-log.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as { images?: number });
+    expect(posts.map((entry) => entry.images ?? 0)).toEqual([1, 1, 0, 0]);
+  });
 
   it('denies submit in fill, prints nothing on allow and logs every call', () => {
     const dir = attemptAtReview('fill');

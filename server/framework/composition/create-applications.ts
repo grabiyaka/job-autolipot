@@ -44,7 +44,7 @@ export function claudeApplyAgent(config: () => ClaudeAgentConfig): ApplyAgent {
         const result = await agent.run(request);
         return {
           output: result.output, sessionId: result.sessionId, turns: result.turns, durationMs: result.durationMs,
-          tokens: result.tokens, costMicros: result.costMicros, runDir: result.runDir,
+          tokens: result.tokens, costMicros: result.costMicros, runDir: result.runDir, screenshots: result.screenshots,
           toolCalls: result.guardLog.map((entry) => ({
             tool: entry.tool, decision: entry.decision, ...(entry.reason ? { reason: entry.reason } : {}),
             ...(entry.submit !== undefined ? { submit: entry.submit } : {}),
@@ -54,6 +54,7 @@ export function claudeApplyAgent(config: () => ClaudeAgentConfig): ApplyAgent {
         if (error instanceof AgentError) {
           throw new ApplyAgentError(error.message, { tokens: error.tokens ?? noSpend.tokens, costMicros: error.costMicros ?? 0 }, {
             ...(error.sessionId ? { sessionId: error.sessionId } : {}), ...(error.runDir ? { runDir: error.runDir } : {}),
+            screenshots: error.screenshots,
             toolCalls: error.guardLog.map((entry) => ({ tool: entry.tool, decision: entry.decision, ...(entry.submit !== undefined ? { submit: entry.submit } : {}) })),
             unavailable: error instanceof AgentUnavailableError,
           });
@@ -88,7 +89,9 @@ export function resolveCvPath(settings: ApplyEnvSettings, filesDir: string = age
 }
 
 export function applySettings(settings: ApplyEnvSettings): ApplySettings {
-  return { cvPath: resolveCvPath(settings), maxPerRun: settings.maxPerRun, maxMicrosPerDay: usdToMicros(settings.maxUsdPerDay) };
+  return {
+    cvPath: resolveCvPath(settings), maxPerRun: settings.maxPerRun, maxMicrosPerDay: usdToMicros(settings.maxUsdPerDay), autoSubmit: settings.autoSubmit,
+  };
 }
 
 export type ApplyDependencies = Readonly<{
@@ -130,9 +133,16 @@ export function createApplier(databaseUrl: string, settings: ApplyProcessSetting
   });
   return {
     applications,
-    async activeUser(email: string): Promise<(Actor & { email: string }) | null> {
-      const found = await users.findByEmail(email.trim().toLowerCase());
-      return found && !found.disabled ? { id: found.user.id, role: found.user.role, email: found.user.email } : null;
+    /** The user by email, or the only active user when email is null; throws when it cannot be told. */
+    async activeUser(email: string | null): Promise<Actor & { email: string }> {
+      if (email) {
+        const found = await users.findByEmail(email.trim().toLowerCase());
+        if (!found || found.disabled) throw new Error(`Активный пользователь ${email} не найден.`);
+        return { id: found.user.id, role: found.user.role, email: found.user.email };
+      }
+      const active = await prisma.user.findMany({ where: { disabled: false }, select: { id: true, role: true, email: true }, take: 2 });
+      if (active.length === 1) return active[0]!;
+      throw new Error(active.length ? 'Активных пользователей несколько: укажите --user или BOT_USER.' : 'Активных пользователей нет: npm run user:create.');
     },
     close: () => prisma.$disconnect(),
   };

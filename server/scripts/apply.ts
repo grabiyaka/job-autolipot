@@ -1,6 +1,6 @@
 import '../plugins/environment.js';
 import { createApplier } from '../framework/composition/create-applications.js';
-import { applySettingsFromEnv, claudeAgentConfigFromEnv, jobTrackerConfigFromEnv } from '../plugins/environment.js';
+import { agentBackendFromEnv, applySettingsFromEnv, claudeAgentConfigFromEnv, jobTrackerConfigFromEnv } from '../plugins/environment.js';
 import { answerLines, applyCommand, fillLines, pendingLines, submitLines } from './apply-cli.js';
 
 const usage = `Подача на вакансии из Job-Tracker To Apply через агента: LinkedIn Easy Apply и формы на сайтах компаний / ATS.
@@ -15,6 +15,13 @@ const usage = `Подача на вакансии из Job-Tracker To Apply че
   npm run apply -- --user me@example.com --manual-applied <applicationId>   подал сам (попытка manual): applied и отметка в Job-Tracker
   npm run apply -- --user me@example.com --answer <questionId> "<ответ>"   ответ в банк; после последнего — вакансия снова queued
 
+Автоподача (заполнить и сразу отправить, без ✅; агент — Claude на подписке):
+  npm run autoapply [-- --limit N] [--job <id>]                    то же, что apply --auto --agent claude
+
+--auto: агент отправляет форму сам (как APPLY_AUTO_SUBMIT=true); вопрос без ответа — needs_input, без отправки.
+--agent claude|deepseek: чем заполнять (по умолчанию APPLY_AGENT, иначе deepseek). Claude: модель APPLY_CLAUDE_MODEL (sonnet),
+  лимит APPLY_CLAUDE_MAX_USD_PER_DAY (10, по прайсу API — на подписке условно).
+--user: по умолчанию BOT_USER из .env, иначе единственный активный пользователь.
 --job: id вакансии здесь или в Job-Tracker; берётся, даже если её нет в To Apply или она failed/skipped.
 Лимиты: APPLY_MAX_PER_RUN (5), APPLY_MAX_USD_PER_DAY (0.5, сутки по UTC). Резюме: APPLY_CV_FILE.
 Ctrl+C останавливает запуск: текущая попытка помечается остановленной, вакансия возвращается в очередь.`;
@@ -25,14 +32,18 @@ async function main(): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error('DATABASE_URL не задан: выполните npm run setup в корне проекта (создаст .env).');
 
+  const fill = command.action === 'fill' ? command : null;
+  const backend = fill?.agent ?? agentBackendFromEnv();
+  const apply = applySettingsFromEnv(process.env, backend);
   const applier = createApplier(databaseUrl, {
-    tracker: jobTrackerConfigFromEnv(), agentConfig: () => claudeAgentConfigFromEnv(), apply: applySettingsFromEnv(),
+    tracker: jobTrackerConfigFromEnv(), agentConfig: () => claudeAgentConfigFromEnv(process.env, backend),
+    apply: fill?.auto ? { ...apply, autoSubmit: true } : apply,
   });
+  if (fill) console.warn(`агент: ${backend}${fill.auto || apply.autoSubmit ? ', автоотправка без ✅' : ', стоп перед отправкой'}`);
   const stop = new AbortController();
   process.once('SIGINT', () => { console.warn('! Ctrl+C: останавливаю агента…'); stop.abort(); });
   try {
-    const owner = await applier.activeUser(command.user);
-    if (!owner) throw new Error(`Активный пользователь ${command.user} не найден.`);
+    const owner = await applier.activeUser(command.user ?? (process.env.BOT_USER?.trim() || null));
     const { applications } = applier;
     let lines: string[];
     switch (command.action) {

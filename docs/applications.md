@@ -3,7 +3,8 @@
 Агент (`claude -p` на DeepSeek с Playwright MCP, [agent-runner.md](agent-runner.md)) заполняет форму
 LinkedIn Easy Apply **или форму на сайте компании / ATS** (Greenhouse, Lever, Ashby…) по профилю из Job-Tracker
 и банку ответов и **останавливается перед отправкой**. Отправка идёт только после твоего ✅: кнопка в Telegram,
-`--submit` в CLI или `POST /api/applications/:id/submit`. Автоподачи без ✅ нет. Сайты с аккаунтом, входом по
+`--submit` в CLI или `POST /api/applications/:id/submit`. Без ✅ — только с `APPLY_AUTO_SUBMIT=true`
+([автоотправка](#автоотправка-apply_auto_submittrue)). Сайты с аккаунтом, входом по
 паролю или капчей (Workday, iCIMS, Taleo, SuccessFactors) агент не трогает: попытка `manual`, ссылка тебе,
 после подачи — «подал сам» (`--manual-applied`).
 
@@ -40,6 +41,27 @@ JT To Apply (GET /api/ai/jobs?evaluation=any, старые первыми, вс�
 manual → «подал сам» (--manual-applied, POST …/manual-applied) → попытка submitted, вакансия applied → JT (company_site_manual)
        ❌ → попытка и вакансия skipped
 ```
+
+## Автоотправка (`APPLY_AUTO_SUBMIT=true`)
+
+По умолчанию выключена. Включённая меняет только заполнение (`fillNext`), ✅ для старых `ready` работает как раньше:
+
+- агент запускается в режиме защиты `submit_fresh` (один разрешённый клик отправки за попытку; хосты, загрузки,
+  Enter и всё остальное защита проверяет как прежде) с промптом `auto`: заполнить и отправить форму ровно один раз,
+  подтвердить по «Application sent» / странице «спасибо»; на каждом шаге формы перед Next / Review / Submit —
+  `browser_take_screenshot`. Схема ответа и исходы — как у `submit_fresh`;
+- `submitted` → попытка `submitted` (`trackerChannel` по `kind`), вакансия `applied`, сразу отметка в JT (как после ✅);
+  в отчёте `FillReport.submitted`: попытка с полями (`filled` — вопросы и ответы), файлы скриншотов, итог JT;
+- обязательный вопрос без ответа → `needs_input` **без отправки**, вопросы в Telegram со ссылкой на форму;
+- агент не подтвердил отправку, а защита пропустила клик отправки (в том числе при ошибке или остановке агента) →
+  попытка и вакансия `failed` «отправка не подтверждена — проверьте: <ссылка>», заново **не** заполняется;
+- скриншоты сохраняет хук ([agent-runner.md](agent-runner.md)) в `runs/<id>/screenshots/`, пути — в `applications.result`.
+
+## Черновик
+
+Попытка `needs_input` хранит поля, которые агент уже заполнил (`filled` в `applications.result`), и ссылку на форму
+(`applyUrl`). Следующее заполнение этой вакансии получает поля последней такой попытки в `<previous_fill>` с правилом
+«черновик прошлой попытки: используй эти значения, недостающее — из ответов» (`ApplicationRepository.latestDraft`).
 
 Вакансии берутся по одной: браузер один, на весь прогон берётся lock `server/data/browser.lock`
 (общий со сборщиком и ботом). Занят — ошибка «браузер занят: …».
@@ -136,8 +158,9 @@ manual → «подал сам» (--manual-applied, POST …/manual-applied) →
 
 Ответ (реплаем в Telegram, `--answer` или `POST /api/questions/:id/answer`) записывается в банк ответов
 (`origin: telegram` или `manual`) по формулировке вопроса агента. Когда закрыт последний вопрос попытки,
-вакансия снова `queued`: следующий прогон начнёт форму заново (через часы старая сессия ненадёжна —
-форма LinkedIn закрывается), уже с новым ответом в банке.
+вакансия снова `queued`: следующее заполнение начнёт форму заново (через часы старая сессия ненадёжна —
+форма LinkedIn закрывается) с [черновиком](#черновик) и новым ответом в банке. Ответ реплаем в Telegram
+запускает это заполнение сразу ([telegram.md](telegram.md#подача-)); CLI и HTTP — следующий `npm run apply` / `/run apply`.
 
 ## Лимиты
 
@@ -159,7 +182,13 @@ npm run apply -- --user <email> --submit <applicationId>   # отправить 
 npm run apply -- --user <email> --reject <applicationId>   # отказаться (ready, needs_input, manual): skipped «отклонено вручную»
 npm run apply -- --user <email> --manual-applied <applicationId>   # подал сам (только manual): applied, JT company_site_manual
 npm run apply -- --user <email> --answer <questionId> "<ответ>"
+npm run autoapply [-- --limit N] [--job <id>]   # автоподача: Claude на подписке заполняет и сразу отправляет, без ✅
 ```
+
+`npm run autoapply` = `apply --auto --agent claude`: `--auto` — [автоотправка](#автоотправка-apply_auto_submittrue)
+на этот прогон, `--agent claude` — агент `claude -p` на залогиненном аккаунте Claude (без DeepSeek, модель
+`APPLY_CLAUDE_MODEL`), лимит дня — `APPLY_CLAUDE_MAX_USD_PER_DAY` (стоимость — `total_cost_usd` по прайсу API, на
+подписке условная). Флаги можно и в `apply`. `--user` необязателен: `BOT_USER`, иначе единственный активный пользователь.
 
 `--job` — id вакансии в autopilot или в JT; такую вакансию можно повторить и после `failed` / `skipped` / `manual`.
 
@@ -184,6 +213,10 @@ HTTP (нужен вход, видны только свои записи, чуж
 | `APPLY_MAX_PER_RUN` | 5 |
 | `APPLY_MAX_USD_PER_DAY` | 0.5 |
 | `APPLY_CV_FILE` | имя файла резюме в `/srv/agent-files`; пусто — единственный PDF там |
+| `APPLY_AUTO_SUBMIT` | `false`; `true` — [автоотправка](#автоотправка-apply_auto_submittrue) без ✅ |
+| `APPLY_AGENT` | `deepseek` (по умолчанию) или `claude` — аккаунт Claude без `--settings`; `--agent` перекрывает |
+| `APPLY_CLAUDE_MODEL` | `sonnet`; модель для `claude` |
+| `APPLY_CLAUDE_MAX_USD_PER_DAY` | 10; дневной лимит для `claude` вместо `APPLY_MAX_USD_PER_DAY` |
 | `JOB_TRACKER_URL`, `JOB_TRACKER_TOKEN` | обязательны: профиль и To Apply; токену нужен scope `ai:applications:write` |
 | `DEEPSEEK_*`, `AGENT_CWD`, `PLAYWRIGHT_MCP_URL`, `APPLY_TIMEOUT_MS` | плагин агента, [agent-runner.md](agent-runner.md) |
 
@@ -211,5 +244,7 @@ HTTP (нужен вход, видны только свои записи, чуж
 - расход повторного заполнения по ✅ (`submit_fresh`) записывается в попытку и попадает в день её начала, а не
   в день ✅: дневной лимит его в этот день не видит;
 - живая проверка на 5 вакансиях Easy Apply (заполнение, ✅, отметка в JT);
-- автоподача без ✅ (флаг расписания `autoSubmit`) — позже, по решению пользователя;
-- скриншоты до/после (`screenshotBefore/After`) не заполняются: скриншоты MCP пишет в папку, закрытую для этого пользователя.
+- живая проверка автоотправки (`APPLY_AUTO_SUBMIT=true`) на Easy Apply: отправка, скриншоты, отметка в JT;
+- скриншоты: на 2026-11-06 `browser_take_screenshot` в агентском Chromium (Xvfb, `--enable-gpu-rasterization`)
+  падает по таймауту 5 с, картинок нет; доходит ли картинка MCP до PostToolUse-хука `claude`, ещё не проверено вживую;
+- колонки `screenshotBefore/After` не заполняются (пути скриншотов лежат в `applications.result`).

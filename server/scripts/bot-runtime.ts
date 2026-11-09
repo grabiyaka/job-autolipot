@@ -5,7 +5,7 @@ import type { TelegramClient, TelegramUpdate } from '../plugins/telegram.js';
 import { ApplicationError } from '../framework/core/errors.js';
 import type { Actor } from '../framework/core/actor.js';
 import type { AnswerApi, Answer } from '../src/answers/AnswerTypes.js';
-import type { ApplicationApi, ApplicationView, QuestionView } from '../src/applications/ApplicationTypes.js';
+import type { ApplicationApi, ApplicationView, QuestionView, SubmittedView } from '../src/applications/ApplicationTypes.js';
 import type { JobService } from '../src/jobs/JobService.js';
 import { DEFAULT_TASK_MINUTES, taskOptions } from '../src/schedules/ScheduleService.js';
 import type { PipelineTask, Schedule, ScheduleService, TaskOptions, TaskRunStatus, TaskTrigger } from '../src/schedules/ScheduleService.js';
@@ -13,7 +13,7 @@ import type { ScoringLine } from '../src/scoring/ScoringService.js';
 import type { SearchService } from '../src/searches/SearchService.js';
 import type { Logger } from '../src/searches/SearchTypes.js';
 import {
-  answersText, applyReportLines, helpText, manualMessage, minutesAgo, progressText, questionMessage, readyMessage, submitLabel, submitResultText, parseCallback, parseCommand, queuedText, scheduleLine, scheduleSaved, schedulesMessage, searchesMessage,
+  answersText, applyReportLines, helpText, manualMessage, menuCommands, minutesAgo, progressText, questionMessage, readyMessage, submitLabel, submitResultText, submittedMessage, parseCallback, parseCommand, queuedText, scheduleLine, scheduleSaved, schedulesMessage, searchesMessage,
   searchLine, statusText,
 } from './bot-commands.js';
 import type { ApplicationAction, BotCommand, TaskProgress } from './bot-commands.js';
@@ -75,7 +75,11 @@ export type TaskOutcome = Readonly<{
   apply?: ApplyMessages;
 }>;
 
-export type ApplyMessages = Readonly<{ ready: readonly ApplicationView[]; questions: readonly QuestionView[]; manual: readonly ApplicationView[] }>;
+export type ApplyMessages = Readonly<{
+  ready: readonly ApplicationView[]; questions: readonly QuestionView[]; manual: readonly ApplicationView[];
+  /** Forms the agent sent itself (APPLY_AUTO_SUBMIT); /pending has none. */
+  submitted?: readonly SubmittedView[];
+}>;
 
 type Current = { task: string; trigger: TaskTrigger; startedAt: Date; controller: AbortController; progress: TaskProgress };
 
@@ -233,7 +237,8 @@ export class TaskRunner {
       const failed = report.lines.some((line) => line.status === 'failed') || report.resent.some((item) => !item.ok);
       return {
         status: signal.aborted ? 'aborted' : 'ok', lines: applyReportLines(report), queued: 0,
-        problems: failed || report.stopped === 'budget', apply: { ready: report.ready, questions: report.questions, manual: report.manual },
+        problems: failed || report.stopped === 'budget',
+        apply: { ready: report.ready, questions: report.questions, manual: report.manual, submitted: report.submitted },
       };
     }
 
@@ -291,7 +296,8 @@ const pushFailed = (score: CycleStage<CycleScore>): boolean =>
 export function shouldReport(outcome: TaskOutcome, policy: ScheduledReportPolicy): boolean {
   if (outcome.trigger === 'manual' || policy === 'always') return true;
   return outcome.status !== 'ok' || outcome.problems || outcome.queued > 0
-    || Boolean(outcome.apply && (outcome.apply.ready.length || outcome.apply.questions.length || outcome.apply.manual.length));
+    || Boolean(outcome.apply && (outcome.apply.ready.length || outcome.apply.questions.length || outcome.apply.manual.length
+      || outcome.apply.submitted?.length));
 }
 
 const outcomeMarks: Record<TaskOutcome['status'], string> = { ok: '✅', error: '⚠️', aborted: '⏹', busy: '⛔' };
@@ -431,6 +437,15 @@ export class TelegramBot {
   /** Waits for the tasks started from commands and schedules (tests and shutdown). */
   async settled(): Promise<void> {
     while (this.tasks.size) await Promise.all([...this.tasks]);
+  }
+
+  /** Fills the «/» menu in Telegram; a failure only warns: the commands still work typed by hand. */
+  async registerCommands(): Promise<void> {
+    try {
+      await this.telegram.setMyCommands(menuCommands);
+    } catch (error) {
+      this.runtime.out.warn(`Telegram: меню команд не обновлено: ${error instanceof Error ? error.message : error}`);
+    }
   }
 
   /** Long polling until the signal aborts; a failed request waits and tries again. */
@@ -584,7 +599,17 @@ export class TelegramBot {
    * One message per form waiting for ✅ and per job to apply to by hand (with buttons), and per question
    * (its id is kept for the reply).
    */
-  private async sendApply({ ready, questions, manual }: ApplyMessages): Promise<void> {
+  private async sendApply({ ready, questions, manual, submitted = [] }: ApplyMessages): Promise<void> {
+    for (const sent of submitted) {
+      await this.telegram.sendMessage(this.settings.chatId, submittedMessage(sent));
+      if (!sent.screenshots.length) continue;
+      const caption = `${escapeHtml(sent.application.jobTitle)} — ${escapeHtml(sent.application.company)}`;
+      // The text already went out: a failed upload is only a warning.
+      await this.telegram.sendPhotos(this.settings.chatId, sent.screenshots, caption).catch((error: unknown) => {
+        this.runtime.out.warn(`скриншоты: ${error instanceof Error ? error.message : error}`);
+        return this.say(escapeHtml(`Скриншоты не отправились: ${error instanceof Error ? error.message : error}`));
+      });
+    }
     for (const message of [...ready.map(readyMessage), ...manual.map(manualMessage)]) {
       await this.telegram.sendMessage(this.settings.chatId, message.text, { keyboard: message.keyboard });
     }
@@ -650,11 +675,39 @@ export class TelegramBot {
     const question = await applications.findQuestionByMessage(this.owner.id, String(messageId));
     if (!question || question.status !== 'open') return false;
     const report = await applications.answerQuestion(this.owner.id, question.id, text, 'telegram');
-    const tail = report.requeued
-      ? 'Все вопросы по вакансии закрыты: она снова в очереди, следующий /run apply заполнит форму заново.'
-      : `Осталось вопросов по этой вакансии: ${report.remaining}.`;
+    const busy = report.requeued ? this.runner.busyText() : null;
+    const tail = !report.requeued
+      ? `Осталось вопросов по этой вакансии: ${report.remaining}.`
+      : busy
+        ? `Все вопросы по вакансии закрыты: она снова в очереди (${busy}), следующий /run apply заполнит форму заново.`
+        : 'Все вопросы по вакансии закрыты: заполняю форму заново по черновику и вашему ответу, итог придёт сообщением.';
     await this.say(`Записано в банк ответов:\n• ${escapeHtml(question.text)}\n  → ${escapeHtml(report.question.answer ?? text)}\n${tail}`);
+    if (report.requeued && !busy) this.refill(question);
     return true;
+  }
+
+  /**
+   * The last question of a job is answered: its form is filled again at once (with APPLY_AUTO_SUBMIT — and sent),
+   * in the background under the "one task at a time" rule. Busy by then — the job stays queued for /run apply.
+   */
+  private refill(question: QuestionView): void {
+    const { applications } = this.services;
+    const label = `apply: ${question.jobTitle} — ${question.company} (после ответа)`;
+    const run = (async () => {
+      try {
+        const run = await this.runner.exclusive(label, (signal) => applications.fillNext(this.owner.id, { jobId: question.jobId, signal }));
+        if (!run) { await this.say('Бот занят другой задачей: вакансия в очереди, её заполнит следующий /run apply.'); return; }
+        await this.say(`<b>apply</b> после ответа\n${applyReportLines(run.result).map(escapeHtml).join('\n')}`);
+        await this.sendApply({ ready: run.result.ready, questions: run.result.questions, manual: run.result.manual, submitted: run.result.submitted });
+      } catch (error) {
+        const known = error instanceof ApplicationError || error instanceof BrowserBusyError;
+        const message = error instanceof Error ? error.message : String(error);
+        if (!known) this.runtime.out.warn(`apply после ответа: ${message}`);
+        await this.say(escapeHtml(`Не заполнено заново: ${message}. Вакансия в очереди, её возьмёт /run apply.`));
+      }
+    })().catch((error: unknown) => this.runtime.out.warn(`apply после ответа: ${error instanceof Error ? error.message : error}`));
+    const tracked = run.finally(() => { this.tasks.delete(tracked); });
+    this.tasks.add(tracked);
   }
 
   private async report(outcome: TaskOutcome): Promise<string> {

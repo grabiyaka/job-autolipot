@@ -4,7 +4,7 @@ import { constants } from 'node:fs';
 import { access, chmod, copyFile, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentFilesDir, allowedTools, disallowedTools, guardLogFile, httpsHost } from './agent-guard-rules.js';
+import { agentFilesDir, allowedTools, disallowedTools, guardLogFile, httpsHost, screenshotsDir } from './agent-guard-rules.js';
 import type { ApplyMode } from './agent-guard-rules.js';
 
 /**
@@ -25,8 +25,10 @@ import type { ApplyMode } from './agent-guard-rules.js';
  * - `workDir` (by default server/data/agent): runs/<id>/ of each run with the system prompt and the
  *   guard log; private to this app.
  *
- * Cost is counted from tokens and DeepSeek prices (USD per 1M tokens); `total_cost_usd` of `claude`
- * is ignored, it uses Claude prices. The settings file carries the API key in its `env`: this module
+ * Backend: with `settingsPath` — DeepSeek through `--settings`; cost is counted from tokens and DeepSeek
+ * prices (USD per 1M tokens), `total_cost_usd` of `claude` is ignored (it uses Claude prices). With
+ * `settingsPath: null` — the logged-in Claude account (subscription); cost is `total_cost_usd`
+ * (list price, notional on a subscription), and the ANTHROPIC_* overrides of the parent env are dropped. The settings file carries the API key in its `env`: this module
  * only checks that it exists and never reads or logs it.
  */
 
@@ -42,8 +44,10 @@ export type AgentPrices = Readonly<{
 export type ClaudeAgentConfig = Readonly<{
   /** `claude` executable; a bare name is looked up in PATH. */
   claudeBin: string;
-  /** --settings file (DeepSeek env); only its existence is checked. */
-  settingsPath: string;
+  /** --settings file (DeepSeek env); only its existence is checked. null — the logged-in Claude account. */
+  settingsPath: string | null;
+  /** --model (Claude backend), e.g. `sonnet`. */
+  model?: string;
   /** Playwright MCP over HTTP. */
   mcpUrl: string;
   /** runs/<id>/ of each run (system prompt, guard log) go here; created when missing. */
@@ -54,7 +58,8 @@ export type ClaudeAgentConfig = Readonly<{
   filesSource?: string;
   /** One run is killed after this. */
   timeoutMs: number;
-  prices: AgentPrices;
+  /** DeepSeek prices; null — cost is `total_cost_usd` of `claude` (Claude backend). */
+  prices: AgentPrices | null;
   /** Shell command of the PreToolUse hook; by default the guard script of this server. */
   guardCommand?: string;
   /** Time between SIGTERM and SIGKILL. */
@@ -99,6 +104,8 @@ export type AgentRunResult = Readonly<{
   guardLog: GuardLogEntry[];
   /** runs/<id>/ of this run. */
   runDir: string;
+  /** Images the hook saved from browser_take_screenshot, in order (runs/<id>/screenshots/). */
+  screenshots: string[];
 }>;
 
 export type ClaudeAgent = Readonly<{
@@ -110,6 +117,7 @@ export type ClaudeAgent = Readonly<{
 export type AgentFailure = Readonly<{
   runDir?: string;
   guardLog?: GuardLogEntry[];
+  screenshots?: string[];
   subtype?: string;
   sessionId?: string;
   turns?: number;
@@ -121,6 +129,7 @@ export class AgentError extends Error {
   override name = 'AgentError';
   readonly runDir: string | undefined;
   readonly guardLog: GuardLogEntry[];
+  readonly screenshots: string[];
   readonly subtype: string | undefined;
   readonly sessionId: string | undefined;
   readonly turns: number | undefined;
@@ -130,6 +139,7 @@ export class AgentError extends Error {
     super(message);
     this.runDir = failure.runDir;
     this.guardLog = failure.guardLog ?? [];
+    this.screenshots = failure.screenshots ?? [];
     this.subtype = failure.subtype;
     this.sessionId = failure.sessionId;
     this.turns = failure.turns;
@@ -259,7 +269,8 @@ const snippet = (text: string) => {
 export function agentArgs(files: Readonly<{ mcpConfig: string; systemPromptFile: string }>, config: ClaudeAgentConfig, request: AgentRunRequest): string[] {
   return [
     '-p', request.prompt,
-    '--settings', config.settingsPath,
+    ...(config.settingsPath ? ['--settings', config.settingsPath] : []),
+    ...(config.model ? ['--model', config.model] : []),
     '--setting-sources', 'project',
     '--mcp-config', files.mcpConfig, '--strict-mcp-config',
     '--system-prompt-file', files.systemPromptFile,
@@ -306,6 +317,14 @@ async function readGuardLog(runDir: string): Promise<GuardLogEntry[]> {
   return text.split('\n').filter(Boolean).flatMap((line) => {
     try { return [JSON.parse(line) as GuardLogEntry]; } catch { return []; }
   });
+}
+
+/** The saved screenshots of the run, by name (the hook numbers them in order). */
+async function readScreenshots(runDir: string): Promise<string[]> {
+  const folder = path.join(runDir, screenshotsDir);
+  let names: string[];
+  try { names = await readdir(folder); } catch { return []; }
+  return names.filter((name) => /^\d+\.(png|jpe?g|webp)$/i.test(name)).sort().map((name) => path.join(folder, name));
 }
 
 type Exit = Readonly<{ stdout: string; stderr: string; code: number | null; timedOut: boolean; aborted: boolean }>;
@@ -376,11 +395,12 @@ function runId(now: Date): string {
 
 export function createClaudeAgent(config: ClaudeAgentConfig): ClaudeAgent {
   if (!config.claudeBin) throw new Error('Не задан исполняемый файл claude');
-  if (!config.settingsPath) throw new Error('Не задан файл настроек DeepSeek (DEEPSEEK_SETTINGS)');
+  if (config.settingsPath !== null && !config.settingsPath) throw new Error('Не задан файл настроек DeepSeek (DEEPSEEK_SETTINGS)');
   if (!/^https?:\/\//.test(config.mcpUrl)) throw new Error(`PLAYWRIGHT_MCP_URL должен быть http(s) URL, получено "${config.mcpUrl}"`);
   if (!(config.timeoutMs > 0)) throw new Error('Таймаут агента должен быть положительным');
   if (!path.isAbsolute(config.agentCwd)) throw new Error(`AGENT_CWD должен быть абсолютным путём, получено "${config.agentCwd}"`);
-  for (const [name, price] of Object.entries(config.prices)) {
+  if (config.settingsPath !== null && !config.prices) throw new Error('Для DeepSeek нужны цены DEEPSEEK_PRICE_*');
+  for (const [name, price] of Object.entries(config.prices ?? {})) {
     if (!Number.isFinite(price) || price < 0) throw new Error(`Цена DeepSeek (${name}) должна быть неотрицательным числом`);
   }
 
@@ -391,10 +411,12 @@ export function createClaudeAgent(config: ClaudeAgentConfig): ClaudeAgent {
       if (request.startUrl !== undefined && httpsHost(request.startUrl) === null) {
         throw new Error(`Стартовый адрес агента должен быть https URL, получено «${request.startUrl}»`);
       }
-      try {
-        await access(config.settingsPath, constants.R_OK);
-      } catch {
-        throw new AgentUnavailableError(`Нет файла настроек DeepSeek ${config.settingsPath} (DEEPSEEK_SETTINGS)`);
+      if (config.settingsPath) {
+        try {
+          await access(config.settingsPath, constants.R_OK);
+        } catch {
+          throw new AgentUnavailableError(`Нет файла настроек DeepSeek ${config.settingsPath} (DEEPSEEK_SETTINGS)`);
+        }
       }
       const mcpConfig = await prepareAgentCwd(config);
       const uploadDir = agentUploadDir(config.agentCwd);
@@ -413,6 +435,10 @@ export function createClaudeAgent(config: ClaudeAgentConfig): ClaudeAgent {
       // Hooks inherit this env. CLAUDECODE is dropped so a run started from a Claude session is not taken as nested.
       // APPLY_START_URL of the parent is dropped too: only this run's startUrl may widen the allowed hosts.
       const { CLAUDECODE: _nested, APPLY_START_URL: _inherited, ...env } = process.env;
+      // On the Claude account a base URL / token / model override of the parent would send the run elsewhere.
+      if (config.settingsPath === null) {
+        for (const name of Object.keys(env)) if (/^ANTHROPIC_(BASE_URL|AUTH_TOKEN|MODEL|DEFAULT_\w+_MODEL|SMALL_FAST_MODEL)$/.test(name)) delete env[name];
+      }
       let exit: Exit;
       try {
         exit = await runProcess(config.claudeBin, agentArgs({ mcpConfig, systemPromptFile }, config, request), {
@@ -432,9 +458,10 @@ export function createClaudeAgent(config: ClaudeAgentConfig): ClaudeAgent {
       }
       const durationMs = Date.now() - started;
       const guardLog = await readGuardLog(runDir);
+      const screenshots = await readScreenshots(runDir);
 
       if (exit.aborted) throw request.signal?.reason ?? new Error('Запуск агента остановлен');
-      if (exit.timedOut) throw new AgentTimeoutError(`Агент не закончил за ${Math.round(config.timeoutMs / 1000)} с и остановлен`, { runDir, guardLog });
+      if (exit.timedOut) throw new AgentTimeoutError(`Агент не закончил за ${Math.round(config.timeoutMs / 1000)} с и остановлен`, { runDir, guardLog, screenshots });
 
       let result: Record<string, unknown> | null = null;
       try {
@@ -443,7 +470,7 @@ export function createClaudeAgent(config: ClaudeAgentConfig): ClaudeAgent {
       } catch { /* reported below */ }
       if (!result) {
         throw new AgentResponseError(
-          `claude вернул не JSON (код ${exit.code}): ${snippet(exit.stdout) || snippet(exit.stderr) || 'пустой вывод'}`, { runDir, guardLog },
+          `claude вернул не JSON (код ${exit.code}): ${snippet(exit.stdout) || snippet(exit.stderr) || 'пустой вывод'}`, { runDir, guardLog, screenshots },
         );
       }
 
@@ -451,7 +478,7 @@ export function createClaudeAgent(config: ClaudeAgentConfig): ClaudeAgent {
       const sessionId = typeof result.session_id === 'string' ? result.session_id : '';
       const turns = count(result.num_turns);
       const tokens = resultTokens(result);
-      const failure: AgentFailure = { runDir, guardLog, subtype, sessionId, turns, tokens, costMicros: costMicros(tokens, config.prices) };
+      const failure: AgentFailure = { runDir, guardLog, screenshots, subtype, sessionId, turns, tokens, costMicros: config.prices ? costMicros(tokens, config.prices) : Math.round(count(result.total_cost_usd) * 1_000_000) };
       if (subtype !== 'success' || result.is_error === true) {
         const detail = typeof result.result === 'string' && result.result ? `: ${snippet(result.result)}` : '';
         throw new AgentResponseError(`Агент закончил с ${subtype}${result.is_error === true ? ' (is_error)' : ''}${detail}`, failure);
@@ -462,7 +489,7 @@ export function createClaudeAgent(config: ClaudeAgentConfig): ClaudeAgent {
       if (!sessionId) throw new AgentResponseError('В ответе агента нет session_id', failure);
 
       return {
-        output: result.structured_output, subtype, sessionId, turns, durationMs, tokens, costMicros: failure.costMicros!, guardLog, runDir,
+        output: result.structured_output, subtype, sessionId, turns, durationMs, tokens, costMicros: failure.costMicros!, guardLog, runDir, screenshots,
       };
     },
   };

@@ -3,7 +3,7 @@ import type { ApplicationKind, ApplicationStatus, FilledField, QuestionView, Sto
 
 const withJob = { job: { select: { title: true, company: true, url: true, trackerId: true, status: true, userId: true } } } as const;
 type ApplicationRecord = Prisma.ApplicationGetPayload<{ include: typeof withJob }>;
-const questionWithJob = { application: { select: { jobId: true, job: { select: { title: true, company: true } } } } } as const;
+const questionWithJob = { application: { select: { jobId: true, applyUrl: true, job: { select: { title: true, company: true, url: true } } } } } as const;
 type QuestionRecord = Prisma.QuestionGetPayload<{ include: typeof questionWithJob }>;
 
 /** `result` keeps the agent's answer as JSON; only `filled` and `summary` are read back. */
@@ -32,6 +32,7 @@ function toQuestion(record: QuestionRecord): QuestionView {
   return {
     id: record.id, applicationId: record.applicationId, jobId: record.application.jobId,
     jobTitle: record.application.job.title, company: record.application.job.company,
+    applyUrl: record.application.applyUrl ?? record.application.job.url,
     text: record.text, answer: record.answer, status: record.status, telegramMessageId: record.telegramMessageId,
     createdAt: record.createdAt.toISOString(), answeredAt: record.answeredAt?.toISOString() ?? null,
   };
@@ -74,6 +75,14 @@ export class ApplicationRepository {
       include: withJob, orderBy: [{ startedAt: 'desc' }, { id: 'asc' }],
     });
     return records.map(toApplication);
+  }
+
+  /** The fields of the job's latest attempt that stopped on questions: the draft a new fill starts from. */
+  async latestDraft(ownerId: string, jobId: string): Promise<FilledField[]> {
+    const record = await this.prisma.application.findFirst({
+      where: { jobId, status: 'needs_input', job: { userId: ownerId } }, include: withJob, orderBy: [{ startedAt: 'desc' }, { id: 'desc' }],
+    });
+    return record ? storedResult(record.result).filled : [];
   }
 
   /** Records the run's result while the attempt is still in one of `from`; false when it moved on. */

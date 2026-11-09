@@ -156,7 +156,10 @@ describe('apply CLI arguments', () => {
   });
 
   it('refuses mixed and broken arguments', () => {
-    expect(() => applyCommand([])).toThrow(/--user/);
+    expect(applyCommand([])).toEqual({ action: 'fill', user: null });
+    expect(applyCommand(['--auto', '--agent', 'claude', '--limit', '2'])).toEqual({ action: 'fill', user: null, limit: 2, auto: true, agent: 'claude' });
+    expect(() => applyCommand(['--agent', 'gpt'])).toThrow(/--agent/);
+    expect(() => applyCommand(['--list', '--auto'])).toThrow(/только для заполнения/);
     expect(() => applyCommand(['--user', 'u', '--limit', '0'])).toThrow(/limit/);
     expect(() => applyCommand(['--user', 'u', '--list', '--submit', 'a'])).toThrow(/одно из/);
     expect(() => applyCommand(['--user', 'u', '--submit', 'a', '--manual-applied', 'b'])).toThrow(/одно из/);
@@ -256,6 +259,58 @@ describe('ApplicationService on SQLite with a fake agent and a fake Job-Tracker'
     await applier.applications.fillNext(ownerId);
     expect(agent.requests[1]!.systemPrompt).toContain('Q: Years of experience with TypeScript?\n  A: 1');
     expect(await prisma.question.findMany({ where: { status: 'used' } })).toHaveLength(2);
+  });
+
+  it('APPLY_AUTO_SUBMIT: the fill run sends the form, marks Job-Tracker and reports fields and screenshots', async () => {
+    applier = createTestApplier(prisma, { tracker, agent, lockPath, settings: { ...testApplySettings, autoSubmit: true } });
+    tracker.toApply = [row('jt-auto', linkedinUrl(4000000031))];
+    agent.screenshots = ['/runs/x/screenshots/001.png', '/runs/x/screenshots/002.png'];
+    agent.steps.push(agentAnswer('submitted', { kind: 'easy_apply', summary: 'Application sent', filled: [{ field: 'Years of Node.js?', value: '5' }] }));
+
+    const report = await applier.applications.fillNext(ownerId);
+    expect(agent.requests[0]).toMatchObject({ mode: 'submit_fresh', startUrl: linkedinUrl(4000000031), prompt: expect.stringContaining('send it once') });
+    expect(agent.requests[0]!.systemPrompt).toContain('call browser_take_screenshot once');
+    expect(agent.requests[0]!.systemPrompt).not.toContain('NEVER press');
+    expect(report.lines).toEqual([expect.objectContaining({ status: 'applied' })]);
+    expect(report.ready).toEqual([]);
+    expect(report.submitted).toEqual([{
+      application: expect.objectContaining({ status: 'applied', filled: [{ field: 'Years of Node.js?', value: '5' }] }),
+      screenshots: ['/runs/x/screenshots/001.png', '/runs/x/screenshots/002.png'],
+      tracker: 'отправлено и отмечено в Job-Tracker',
+    }]);
+    expect(tracker.marks).toEqual([{ jobId: 'jt-auto', input: expect.objectContaining({ channel: 'linkedin_easy_apply' }) }]);
+    expect((await jobOf('jt-auto')).status).toBe('applied');
+  });
+
+  it('APPLY_AUTO_SUBMIT: a question stops before sending; the next fill starts from the draft; an unconfirmed send is never refilled', async () => {
+    applier = createTestApplier(prisma, { tracker, agent, lockPath, settings: { ...testApplySettings, autoSubmit: true } });
+    tracker.toApply = [row('jt-q', linkedinUrl(4000000032)), row('jt-u', linkedinUrl(4000000033))];
+    agent.steps.push(
+      agentAnswer('needs_input', { questions: ['Notice period?'], filled: [{ field: 'Email', value: 'me@example.test' }] }),
+      agentAnswer('failed', { summary: 'не увидел подтверждения' }),
+    );
+    // The second run let the send click through and then failed.
+    const clicks: FakeAgent['toolCalls'] = [{ tool: 'mcp__playwright__browser_click', decision: 'allow', submit: true }];
+    const run = agent.run.bind(agent);
+    agent.run = async (request) => {
+      agent.toolCalls = agent.requests.length === 1 ? clicks : [];
+      return run(request);
+    };
+
+    const report = await applier.applications.fillNext(ownerId);
+    expect(report.lines.map((line) => line.status)).toEqual(['needs_input', 'failed']);
+    expect(report.questions.map((question) => question.applyUrl)).toEqual([linkedinUrl(4000000032)]);
+    expect(report.lines[1]!.note).toMatch(/^отправка не подтверждена — проверьте: https:\/\/www\.linkedin\.com\/jobs\/view\/4000000033\//);
+    expect((await jobOf('jt-u')).status).toBe('failed');
+
+    const answered = await applier.applications.answerQuestion(ownerId, report.questions[0]!.id, '1 month', 'telegram');
+    expect(answered.requeued).toBe(true);
+    agent.steps.push(agentAnswer('submitted'));
+    const refill = await applier.applications.fillNext(ownerId, { jobId: (await jobOf('jt-q')).id });
+    expect(agent.requests.at(-1)!.systemPrompt).toContain('<previous_fill>\n- Email: me@example.test\n</previous_fill>');
+    expect(agent.requests.at(-1)!.systemPrompt).toContain('Q: Notice period?\n  A: 1 month');
+    expect(refill.submitted).toHaveLength(1);
+    expect((await jobOf('jt-q')).status).toBe('applied');
   });
 
   it('sends a job that is not on LinkedIn to the agent, and makes it manual on an account or captcha', async () => {

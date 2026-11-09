@@ -29,7 +29,7 @@ export interface Application {
 
 /** Applying over HTTP: without an agent, submit answers 503 and only reading and answering questions work. */
 export type HttpApplySettings = Readonly<{ agent: ApplyAgent | null; settings: ApplySettings }>;
-const noApply: HttpApplySettings = { agent: null, settings: { cvPath: null, maxPerRun: 5, maxMicrosPerDay: 500_000 } };
+const noApply: HttpApplySettings = { agent: null, settings: { cvPath: null, maxPerRun: 5, maxMicrosPerDay: 500_000, autoSubmit: false } };
 
 // Only the composition root knows concrete repositories. HTTP receives public APIs.
 export function createApplication(prisma: PrismaClient, clock: Clock, identifiers: Identifiers, sessionTtlSeconds = 3600,

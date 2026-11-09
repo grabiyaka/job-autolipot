@@ -64,6 +64,7 @@ async function main(): Promise<void> {
     process.once('SIGINT', () => stop('SIGINT'));
     process.once('SIGTERM', () => stop('SIGTERM'));
 
+    await bot.registerCommands();
     await bot.scheduler.refresh();
     const next = bot.scheduler.nextAt;
     console.log(`Бот запущен для ${owner.email}; чат ${settings.chatId}; ближайший запуск по расписанию: ${next ? next.toISOString() : 'нет'}.`);

@@ -19,7 +19,8 @@ costMicros, guardLog, runDir }`. Настройки из `.env` даёт `claude
 - **Режимы** (`ApplyMode`): `fill` — заполнить и остановиться перед отправкой; `submit` — продолжение
   сессии Easy Apply (`resumeSessionId`), один клик отправки; `submit_fresh` — новый прогон для внешней
   формы: агент заново открывает форму, заполняет её и отправляет ровно один раз. Все запреты `fill`
-  в `submit_fresh` действуют, кроме одного разрешённого клика отправки за попытку.
+  в `submit_fresh` действуют, кроме одного разрешённого клика отправки за попытку. В этом же режиме идёт
+  заполнение с `APPLY_AUTO_SUBMIT=true` ([applications.md](applications.md#автоотправка-apply_auto_submittrue)).
 - **`startUrl`** — https-адрес, с которого агент начинает (вакансия не с LinkedIn или внешняя форма
   для `submit_fresh`). Плагин передаёт его хуку в `APPLY_START_URL`, и хост этого адреса разрешён
   для переходов. В промпт адрес кладёт вызывающий. Не https — `run` бросает ошибку до запуска.
@@ -102,6 +103,10 @@ costMicros, guardLog, runDir }`. Настройки из `.env` даёт `claude
     «побывавшим», и туда можно вернуться через `browser_navigate`. Хосты http не запоминаются.
   - В `guard-log.jsonl` пишется строка `event: post` с адресом страницы, числом ref и ответом,
     обрезанным до 2000 символов.
+  - После `browser_take_screenshot` картинки из ответа (MCP-блок `{type: image, data, mimeType}` или
+    `{type: image, source: {type: base64, data, media_type}}`, png / jpeg / webp) сохраняются как
+    `<runDir>/screenshots/001.png`, `002.jpeg`…; в строке `event: post` — `images: N`. Плагин возвращает
+    их списком `screenshots` (и в ошибках агента). Нет картинки в ответе — ничего не сохраняется.
   - PostToolUse ничего не блокирует. Если он упал, ref остаются неизвестными, и следующий клик
     по ним будет запрещён.
 - **PreToolUse.** `browser_click`, `browser_type`, `browser_select_option` и поля `browser_fill_form`

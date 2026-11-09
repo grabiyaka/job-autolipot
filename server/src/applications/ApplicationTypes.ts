@@ -27,6 +27,8 @@ export type QuestionView = Readonly<{
   jobId: string;
   jobTitle: string;
   company: string;
+  /** Where the form is: the attempt's form page, or the job page when the agent gave none. */
+  applyUrl: string;
   text: string;
   answer: string | null;
   status: QuestionStatus;
@@ -92,6 +94,17 @@ export type FillReport = Readonly<{
   questions: QuestionView[];
   /** Attempts of this run the owner has to apply to by hand (`manual`, link in `applyUrl`). */
   manual: ApplicationView[];
+  /** APPLY_AUTO_SUBMIT: attempts this run sent itself, with the fields, the screenshots and the Job-Tracker result. */
+  submitted: SubmittedView[];
+}>;
+
+/** A form the agent sent without ✅: what it answered (`application.filled`) and the screenshots of the form. */
+export type SubmittedView = Readonly<{
+  application: ApplicationView;
+  /** Image files, in the order taken; empty when the agent took none or the browser could not take them. */
+  screenshots: string[];
+  /** What happened in Job-Tracker. */
+  tracker: string;
 }>;
 
 export type FillOptions = Readonly<{
@@ -125,7 +138,10 @@ export type PendingView = Readonly<{ ready: ApplicationView[]; questions: Questi
 
 /** Applying as the bot, the CLI and HTTP see it; every call acts for the owner and hides others' records (404). */
 export interface ApplicationApi {
-  /** Fills the next To Apply jobs one by one and stops before Submit. Throws when the browser is busy. */
+  /**
+   * Fills the next To Apply jobs one by one and stops before Submit (with APPLY_AUTO_SUBMIT: sends them).
+   * Throws when the browser is busy.
+   */
   fillNext(ownerId: string, options?: FillOptions): Promise<FillReport>;
   /**
    * Sends an attempt waiting for ✅ (`ready`), then marks the job applied in Job-Tracker. Easy Apply

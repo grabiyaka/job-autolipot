@@ -57,6 +57,8 @@ export class FakeAgent implements ApplyAgent {
   costMicros = 20_000;
   /** What the guard saw in each run; a click that was let through makes a failed submit "maybe sent". */
   toolCalls: ApplyAgentResult['toolCalls'] = [{ tool: 'mcp__playwright__browser_snapshot', decision: 'allow' }];
+  /** Screenshot files each run reports. */
+  screenshots: string[] = [];
 
   async run(request: ApplyAgentRequest): Promise<ApplyAgentResult> {
     this.requests.push(request);
@@ -67,7 +69,7 @@ export class FakeAgent implements ApplyAgent {
     return {
       output, sessionId: `session-${this.requests.length}`, turns: 10, durationMs: 1000,
       tokens: { input: 1000, cacheRead: 5000, output: 300 }, costMicros: this.costMicros, runDir: null,
-      toolCalls: this.toolCalls,
+      toolCalls: this.toolCalls, screenshots: this.screenshots,
     };
   }
 }
@@ -78,7 +80,7 @@ export const agentAnswer = (outcome: string, extra: Record<string, unknown> = {}
 export const agentFailure = (message: string, aborted = false) => () =>
   new ApplyAgentError(message, { tokens: { input: 10, cacheRead: 0, output: 1 }, costMicros: 500 }, { aborted });
 
-export const testApplySettings: ApplySettings = { cvPath: '/srv/agent-files/agent-run/files/cv.pdf', maxPerRun: 5, maxMicrosPerDay: 500_000 };
+export const testApplySettings: ApplySettings = { cvPath: '/srv/agent-files/agent-run/files/cv.pdf', maxPerRun: 5, maxMicrosPerDay: 500_000, autoSubmit: false };
 
 export function createTestApplier(prisma: PrismaClient, options: Readonly<{
   tracker: JobTrackerClient | null; agent: ApplyAgent; lockPath: string; settings?: ApplySettings; now?: () => Date;

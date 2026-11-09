@@ -2,7 +2,7 @@ import { escapeHtml } from '../plugins/telegram.js';
 import type { InlineKeyboard } from '../plugins/telegram.js';
 import type { Answer } from '../src/answers/AnswerTypes.js';
 import { usd } from '../src/applications/ApplicationRules.js';
-import type { ApplicationView, FillReport, QuestionView, SubmitReport } from '../src/applications/ApplicationTypes.js';
+import type { ApplicationView, FillReport, QuestionView, SubmitReport, SubmittedView } from '../src/applications/ApplicationTypes.js';
 import type { JobStatus, PipelineJob } from '../src/jobs/JobTypes.js';
 import { isPipelineTask, pipelineTasks } from '../src/schedules/ScheduleService.js';
 import type { PipelineTask, ScheduleView, TaskRun, TaskRunStatus, TaskTrigger } from '../src/schedules/ScheduleService.js';
@@ -131,6 +131,14 @@ export function parseCommand(text: string): BotCommand | null {
       return { kind: 'answers' };
     case 'pending':
       return { kind: 'pending' };
+    case 'collect':
+    case 'score':
+    case 'cycle':
+    case 'apply': {
+      // A menu shortcut: `/cycle limit=20` is `/run cycle limit=20`.
+      const options = parseOptions(words);
+      return typeof options === 'string' ? invalid(options) : { kind: 'run', task: name as PipelineTask, options };
+    }
     case 'run': {
       const found = task(words[0], `Какую задачу запустить: /run ${taskList} [limit=N threshold=N max=минуты easy skip-collect]`);
       if (!isPipelineTask(found)) return invalid(found);
@@ -187,22 +195,64 @@ export function parseCallback(data: string | undefined): BotCallback | null {
 
 // ── Texts ──
 
+/**
+ * The «/» menu in Telegram (setMyCommands): commands that make sense to tap without typing anything.
+ * Names: a–z, 0–9 and _, up to 32 characters; descriptions up to 256.
+ */
+export const menuCommands: ReadonlyArray<Readonly<{ command: string; description: string }>> = [
+  { command: 'start', description: 'Как пользоваться: с чего начать и все команды' },
+  { command: 'status', description: 'Что сейчас происходит: вакансии, задача, запуски' },
+  { command: 'cycle', description: 'Полный цикл: собрать → оценить → в To Apply' },
+  { command: 'collect', description: 'Только собрать вакансии по поискам' },
+  { command: 'score', description: 'Только оценить найденные вакансии' },
+  { command: 'apply', description: 'Заполнить формы из To Apply (отправка после ✅)' },
+  { command: 'stop', description: 'Остановить текущую задачу' },
+  { command: 'pending', description: 'Ждут ✅, подать вручную, вопросы агента' },
+  { command: 'queued', description: '10 лучших отобранных вакансий' },
+  { command: 'searches', description: 'Сохранённые поиски (вкл/выкл, удалить)' },
+  { command: 'search', description: 'Добавить поиск LinkedIn (покажет формат)' },
+  { command: 'schedule', description: 'Расписания запусков' },
+  { command: 'answers', description: 'Банк ответов на вопросы форм' },
+  { command: 'answer', description: 'Добавить ответ (покажет формат)' },
+  { command: 'help', description: 'Список команд' },
+];
+
 export const helpText = [
   '<b>job-autopilot</b>',
-  '/status — вакансии по статусам, текущая задача, последние запуски, ближайшие по расписанию',
-  `/run ${taskList} — запустить сейчас; флаги: limit=N threshold=N max=минуты easy skip-collect`,
+  '',
+  '<b>С чего начать</b>',
+  '1. /search node.js | Remote | +node,backend | -java — добавить поиск LinkedIn (/searches — список)',
+  '2. /cycle — собрать вакансии, оценить, лучшие уйдут в To Apply (/status — как идёт, /stop — остановить)',
+  '3. /queued — посмотреть отобранные',
+  '4. /apply — агент заполнит формы и пришлёт каждую на ✅; /pending — что ждёт решения',
+  '5. По расписанию: /schedule cycle 0 9,18 * * *, затем /on cycle',
+  'Все команды — в меню «/» слева от поля ввода.',
+  '',
+  '<b>Запуск</b> (флаги необязательны: limit=N threshold=N max=минуты easy skip-collect)',
+  '/cycle — сбор → оценка → To Apply; /cycle skip-collect — без сбора',
+  '/collect — только сбор · /score — только оценка',
+  '/apply limit=N — заполнить формы из To Apply (LinkedIn Easy Apply и внешние сайты: Greenhouse, Lever…); перед отправкой агент останавливается',
+  '  ✅ на внешней форме — агент заполнит её заново и отправит (пара минут); ❌ — отказаться',
+  '  🖐 «подать вручную» (Workday, аккаунт, капча) — ссылка; подали сами — «✅ подал сам», отмечу в Job-Tracker',
+  `/run ${taskList} [флаги] — то же самое длинной формой`,
   '/stop — остановить текущую задачу (дописав текущую страницу или вакансию)',
+  '',
+  '<b>Смотреть</b>',
+  '/status — вакансии по статусам, текущая задача, последние запуски, ближайшие по расписанию',
+  '/queued — 10 лучших отобранных',
+  '/pending — что ждёт ✅, что подать вручную, открытые вопросы агента (кнопки; на вопрос — ответ реплаем)',
+  '',
+  '<b>Поиски</b>',
+  '/searches — сохранённые поиски с кнопками вкл/выкл и 🗑',
+  '/search node.js | Remote | +node,backend | -java — добавить поиск LinkedIn (только Easy Apply; all — все вакансии)',
+  '',
+  '<b>Расписания</b>',
   '/schedule — расписания с кнопками',
   '/schedule cycle 0 9,18 * * * — создать или заменить расписание (новое выключено)',
   '/on cycle · /off cycle — включить или выключить расписание',
-  '/searches — сохранённые поиски с кнопками вкл/выкл и 🗑',
-  '/search node.js | Remote | +node,backend | -java — добавить поиск LinkedIn (только Easy Apply; all — все вакансии)',
-  '/queued — 10 лучших отобранных',
+  '',
+  '<b>Ответы</b>',
   '/answers — банк ответов; /answer &lt;вопрос&gt; = &lt;ответ&gt; — добавить',
-  '/run apply limit=N — заполнить формы из To Apply (LinkedIn Easy Apply и внешние сайты: Greenhouse, Lever…); перед отправкой агент останавливается',
-  '  ✅ на внешней форме — агент заполнит её заново и отправит (пара минут); ❌ — отказаться',
-  '  🖐 «подать вручную» (Workday, аккаунт, капча) — ссылка; подали сами — «✅ подал сам», отмечу в Job-Tracker',
-  '/pending — что ждёт ✅, что подать вручную, открытые вопросы агента (кнопки; на вопрос — ответ реплаем)',
 ].join('\n');
 
 /** Date and time in the schedule's zone, e.g. «05.11 09:00». */
@@ -364,6 +414,7 @@ export function applyReportLines(report: FillReport): string[] {
   const lines = report.resent.map((item) => `Job-Tracker: ${item.title} — ${item.result}`);
   if (!report.lines.length) lines.push('Подходящих вакансий в To Apply нет.');
   for (const line of report.lines) lines.push(`${line.status}: ${line.title} — ${line.company}. ${line.note}`);
+  if (report.submitted.length) lines.push(`Отправлено агентом: ${report.submitted.length} — вопросы, ответы и скриншоты ниже.`);
   if (report.manual.length) lines.push(`Подать вручную: ${report.manual.length} — ссылки ниже; подали — «✅ подал сам».`);
   lines.push(`Итог: ${applyStops[report.stopped]}; сегодня потрачено ${usd(report.spentTodayMicros)} из ${usd(report.budgetMicros)}.`);
   return lines;
@@ -397,6 +448,32 @@ function externalReadyText(application: ApplicationView): string {
     '',
     externalHint,
   ];
+  return withFields(head, application, tail);
+}
+
+/**
+ * A form the agent sent itself (APPLY_AUTO_SUBMIT): the link, the Job-Tracker result and every question
+ * with the answer it gave; the screenshots follow as an album.
+ */
+export function submittedMessage(sent: SubmittedView): string {
+  const { application } = sent;
+  const head = [
+    `🚀 <b>Отправлено агентом</b>: ${escapeHtml(application.jobTitle)} — ${escapeHtml(application.company)}`,
+    `Форма: ${linkTo(application.applyUrl ?? application.url)}`,
+    `Job-Tracker: ${escapeHtml(sent.tracker)}`,
+    '',
+    '<b>Вопросы и ответы</b>:',
+  ];
+  const tail = [
+    ...(application.summary ? ['', escapeHtml(cut(application.summary, 500))] : []),
+    '',
+    sent.screenshots.length ? `Скриншоты формы: ${sent.screenshots.length} — ниже.` : 'Скриншотов нет: агент их не сделал или браузер не смог.',
+  ];
+  return withFields(head, application, tail);
+}
+
+/** head, «• field: value» lines of the filled form cut to fit one message (with «…и ещё N полей»), tail. */
+function withFields(head: readonly string[], application: Pick<ApplicationView, 'filled'>, tail: readonly string[]): string {
   const fields = application.filled.map((item) => `• ${escapeHtml(cut(item.field, fieldValueMax))}: ${escapeHtml(cut(item.value, fieldValueMax))}`);
   if (!fields.length) return [...head, '(агент не перечислил поля)', ...tail].join('\n');
   // Room for the fields and a «…и ещё N полей» line.
@@ -459,8 +536,10 @@ export function questionMessage(question: QuestionView): string {
   return [
     `❓ <b>Вопрос агента</b> (${escapeHtml(question.jobTitle)} — ${escapeHtml(question.company)}):`,
     escapeHtml(question.text),
+    `Форма: ${linkTo(question.applyUrl)}`,
     '',
-    'Ответьте реплаем на это сообщение: ответ попадёт в банк ответов.',
+    'Ответьте реплаем на это сообщение: ответ попадёт в банк ответов. Когда ответите на все вопросы вакансии, '
+      + 'агент сразу заполнит форму заново по черновику и вашему ответу.',
   ].join('\n');
 }
 

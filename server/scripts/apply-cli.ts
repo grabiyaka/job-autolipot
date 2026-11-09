@@ -1,4 +1,5 @@
 import { parseArgs } from 'node:util';
+import type { AgentBackend } from '../plugins/environment.js';
 import { usd } from '../src/applications/ApplicationRules.js';
 import type {
   AnswerReport, ApplicationView, FillReport, PendingView, QuestionView, SubmitReport,
@@ -8,32 +9,33 @@ import type {
 
 export type ApplyCommand =
   | Readonly<{ action: 'help' }>
-  | Readonly<{ action: 'fill'; user: string; limit?: number; jobId?: string }>
-  | Readonly<{ action: 'list'; user: string }>
-  | Readonly<{ action: 'submit'; user: string; applicationId: string }>
-  | Readonly<{ action: 'reject'; user: string; applicationId: string }>
-  | Readonly<{ action: 'manualApplied'; user: string; applicationId: string }>
-  | Readonly<{ action: 'answer'; user: string; questionId: string; answer: string }>;
+  | Readonly<{ action: 'fill'; user: string | null; limit?: number; jobId?: string; auto?: boolean; agent?: AgentBackend }>
+  | Readonly<{ action: 'list'; user: string | null }>
+  | Readonly<{ action: 'submit'; user: string | null; applicationId: string }>
+  | Readonly<{ action: 'reject'; user: string | null; applicationId: string }>
+  | Readonly<{ action: 'manualApplied'; user: string | null; applicationId: string }>
+  | Readonly<{ action: 'answer'; user: string | null; questionId: string; answer: string }>;
 
-export const applyUsageHint = 'Использование: npm run apply -- --user <email> [--limit N] [--job <id>] | --list | --submit <id> | --reject <id> | --manual-applied <id> | --answer <questionId> "<ответ>"';
+export const applyUsageHint = 'Использование: npm run apply -- [--user <email>] [--limit N] [--job <id>] [--auto] [--agent claude|deepseek] | --list | --submit <id> | --reject <id> | --manual-applied <id> | --answer <questionId> "<ответ>"';
 
 export function applyCommand(args: readonly string[]): ApplyCommand {
   const { values, positionals } = parseArgs({
     args: [...args], allowPositionals: true,
     options: {
-      user: { type: 'string' }, limit: { type: 'string' }, job: { type: 'string' }, list: { type: 'boolean' },
+      user: { type: 'string' }, limit: { type: 'string' }, job: { type: 'string' }, list: { type: 'boolean' }, auto: { type: 'boolean' }, agent: { type: 'string' },
       submit: { type: 'string' }, reject: { type: 'string' }, 'manual-applied': { type: 'string' }, answer: { type: 'string' }, help: { type: 'boolean', short: 'h' },
     },
   });
   if (values.help) return { action: 'help' };
-  if (!values.user) throw new Error(`Укажите --user. ${applyUsageHint}`);
-  const user = values.user;
+  const user = values.user?.trim() || null;
   const manualApplied = values['manual-applied'];
   const modes = [
     values.list && '--list', values.submit && '--submit', values.reject && '--reject', manualApplied && '--manual-applied', values.answer && '--answer',
   ].filter(Boolean);
   if (modes.length > 1) throw new Error(`Можно только одно из ${modes.join(', ')}. ${applyUsageHint}`);
-  if (modes.length && (values.limit || values.job)) throw new Error(`--limit и --job — только для заполнения. ${applyUsageHint}`);
+  if (modes.length && (values.limit || values.job || values.auto)) throw new Error(`--limit, --job и --auto — только для заполнения. ${applyUsageHint}`);
+  if (values.agent !== undefined && values.agent !== 'claude' && values.agent !== 'deepseek') throw new Error(`--agent — claude или deepseek. ${applyUsageHint}`);
+  const agent = values.agent as AgentBackend | undefined;
   if (values.answer) {
     if (positionals.length !== 1 || !positionals[0]!.trim()) throw new Error(`--answer <questionId> "<ответ>": ответ — один аргумент в кавычках. ${applyUsageHint}`);
     return { action: 'answer', user, questionId: values.answer, answer: positionals[0]! };
@@ -48,7 +50,10 @@ export function applyCommand(args: readonly string[]): ApplyCommand {
     limit = Number(values.limit);
     if (!Number.isInteger(limit) || limit < 1) throw new Error('--limit — целое число от 1.');
   }
-  return { action: 'fill', user, ...(limit !== undefined ? { limit } : {}), ...(values.job ? { jobId: values.job } : {}) };
+  return {
+    action: 'fill', user, ...(limit !== undefined ? { limit } : {}), ...(values.job ? { jobId: values.job } : {}),
+    ...(values.auto ? { auto: true } : {}), ...(agent ? { agent } : {}),
+  };
 }
 
 const stopWords: Record<FillReport['stopped'], string> = {

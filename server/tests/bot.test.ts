@@ -7,7 +7,7 @@ import { acquireBrowserLock } from '../plugins/browser-lock.js';
 import { cronCalendar } from '../plugins/cron.js';
 import { createPrismaClient } from '../plugins/database.js';
 import type { InlineKeyboard, TelegramClient, TelegramUpdate } from '../plugins/telegram.js';
-import { externalMessageMax, fieldValueMax, manualMessage, parseCallback, parseCommand, parseOptions, readyMessage } from '../scripts/bot-commands.js';
+import { externalMessageMax, fieldValueMax, manualMessage, menuCommands, parseCallback, parseCommand, parseOptions, readyMessage, submittedMessage } from '../scripts/bot-commands.js';
 import { Scheduler, shouldReport, TelegramBot } from '../scripts/bot-runtime.js';
 import type { BotOwner, BotServices, TaskOutcome, Timer } from '../scripts/bot-runtime.js';
 import type { PipelineOutput } from '../scripts/pipeline-tasks.js';
@@ -30,6 +30,15 @@ describe('bot commands', () => {
     expect(parseCommand('/schedule apply 0 10 * * 1-5 limit=3')).toEqual({ kind: 'schedule', task: 'apply', cron: '0 10 * * 1-5', options: { limit: 3 } });
     expect(parseCommand('/pending')).toEqual({ kind: 'pending' });
     expect(parseCommand('/run')).toMatchObject({ kind: 'invalid' });
+    expect(parseCommand('/cycle')).toEqual({ kind: 'run', task: 'cycle', options: {} });
+    expect(parseCommand('/apply@JobAutopilotBot limit=2')).toEqual({ kind: 'run', task: 'apply', options: { limit: 2 } });
+    expect(parseCommand('/collect wat')).toMatchObject({ kind: 'invalid', message: expect.stringMatching(/Неизвестный флаг/) });
+    for (const { command, description } of menuCommands) {
+      expect(command).toMatch(/^[a-z0-9_]{1,32}$/);
+      expect(description.length).toBeLessThanOrEqual(256);
+      expect(parseCommand(`/${command}`)).not.toBeNull();
+      expect(parseCommand(`/${command}`)).not.toMatchObject({ message: expect.stringMatching(/Неизвестная команда/) });
+    }
     expect(parseCommand('/run cycle dry-run')).toMatchObject({ kind: 'invalid', message: expect.stringMatching(/Неизвестный флаг/) });
     expect(parseOptions(['skip-collect=no', 'limit=5'])).toEqual({ skipCollect: false, limit: 5 });
     expect(parseOptions(['limit=x'])).toMatch(/целое/);
@@ -84,6 +93,17 @@ const attemptView = (overrides: Partial<ApplicationView> = {}): ApplicationView 
 });
 
 describe('apply messages', () => {
+  it('a form the agent sent: link, Job-Tracker, every question with its answer and the screenshot count', () => {
+    const application = attemptView({ status: 'applied', kind: 'easy_apply', applyUrl: 'https://www.linkedin.com/jobs/view/1/', filled: [{ field: 'Notice <period>?', value: '1 month' }] });
+    const text = submittedMessage({ application, screenshots: ['/a/001.png', '/a/002.png'], tracker: 'отправлено и отмечено в Job-Tracker' });
+    expect(text).toContain('🚀 <b>Отправлено агентом</b>: Node &lt;Dev&gt; — Acme &amp; Co');
+    expect(text).toContain('Форма: <a href="https://www.linkedin.com/jobs/view/1/">www.linkedin.com</a>');
+    expect(text).toContain('Job-Tracker: отправлено и отмечено в Job-Tracker');
+    expect(text).toContain('<b>Вопросы и ответы</b>:\n• Notice &lt;period&gt;?: 1 month');
+    expect(text).toContain('Скриншоты формы: 2 — ниже.');
+    expect(submittedMessage({ application, screenshots: [], tracker: 'x' })).toContain('Скриншотов нет');
+  });
+
   it('an external form shows the host as a link and the filled fields; Easy Apply stays as it was', () => {
     const external = readyMessage(attemptView({ filled: [{ field: 'Email', value: 'a@b.test' }, { field: 'Why <us>?', value: 'Fit & growth' }] }));
     expect(external.text).toContain('🌐 <b>Внешняя форма заполнена, ждёт ✅</b>: Node &lt;Dev&gt; — Acme &amp; Co');
@@ -153,7 +173,7 @@ function fakeTimer(): FakeTimer {
   return timer;
 }
 
-type Sent = { method: string; chatId?: number; text?: string; keyboard?: InlineKeyboard; callbackText?: string };
+type Sent = { method: string; chatId?: number; text?: string; keyboard?: InlineKeyboard; callbackText?: string; files?: readonly string[] };
 function fakeTelegram() {
   const sent: Sent[] = [];
   const client: TelegramClient = {
@@ -161,6 +181,8 @@ function fakeTelegram() {
     async sendMessage(chatId, text, options = {}) { sent.push({ method: 'sendMessage', chatId, text, ...(options.keyboard ? { keyboard: options.keyboard } : {}) }); return sent.length; },
     async editMessageText(chatId, _messageId, text, options = {}) { sent.push({ method: 'editMessageText', chatId, text, ...(options.keyboard ? { keyboard: options.keyboard } : {}) }); },
     async answerCallbackQuery(_id, text) { sent.push({ method: 'answerCallbackQuery', ...(text ? { callbackText: text } : {}) }); },
+    async sendPhotos(chatId, files, caption) { sent.push({ method: 'sendPhotos', chatId, files, ...(caption ? { text: caption } : {}) }); },
+    async setMyCommands(commands) { sent.push({ method: 'setMyCommands', text: commands.map((item) => item.command).join(' ') }); },
   };
   return { client, sent, texts: () => sent.filter((item) => item.method === 'sendMessage').map((item) => item.text!) };
 }
@@ -528,7 +550,7 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     applyAgent.steps.push(
       agentAnswer('ready_to_submit', { filled: [{ field: 'Email', value: 'owner@example.test' }] }),
       agentAnswer('ready_to_submit'),
-      agentAnswer('needs_input', { questions: ['Years of TypeScript <experience>?'] }),
+      agentAnswer('needs_input', { questions: ['Years of TypeScript <experience>?'], filled: [{ field: 'Phone', value: '+353 1 234' }] }),
     );
     await say('/run apply limit=5');
     expect(telegram.texts()[0]).toMatch(/Запускаю <b>apply<\/b>/);
@@ -542,6 +564,7 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     expect(forms[0]!.text).toContain('• Email: owner@example.test');
     const questionIndex = telegram.sent.findIndex((item) => item.text?.startsWith('❓'));
     expect(telegram.sent[questionIndex]!.text).toContain('Years of TypeScript &lt;experience&gt;?');
+    expect(telegram.sent[questionIndex]!.text).toContain('Форма: <a href="https://www.linkedin.com/jobs/view/4000000103/">www.linkedin.com</a>');
     const [okA] = forms[0]!.keyboard![0]!;
     const [, noB] = forms[1]!.keyboard![0]!;
 
@@ -558,15 +581,25 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     expect(await database.job.findFirstOrThrow({ where: { trackerId: 'jt-b' } })).toMatchObject({ status: 'skipped', why: 'отклонено вручную' });
 
     // The fake Telegram numbers messages by their position, so the question's message id is its index + 1.
+    // The last answer fills the form again at once, from the draft and the bank.
+    applyAgent.steps.push(agentAnswer('closed'));
+    const before = telegram.texts().length;
     await bot.handleUpdate({
       update_id: ++updateId,
       message: { message_id: 900, chat: { id: chatId }, date: Math.floor(now.getTime() / 1000), text: '1 year', reply_to_message: { message_id: questionIndex + 1, chat: { id: chatId } } },
     });
-    expect(telegram.texts().at(-1)).toMatch(/Записано в банк ответов[\s\S]*1 year[\s\S]*снова в очереди/);
+    await bot.settled();
+    const after = telegram.texts().slice(before);
+    expect(after[0]).toMatch(/Записано в банк ответов[\s\S]*1 year[\s\S]*заполняю форму заново по черновику/);
+    expect(after[1]).toMatch(/^<b>apply<\/b> после ответа\nskipped: Job jt-c — Acme/);
     expect(await database.answer.findMany({ where: { userId: owner.id } })).toEqual([
       expect.objectContaining({ question: 'Years of TypeScript <experience>?', answer: '1 year', origin: 'telegram' }),
     ]);
-    expect((await database.job.findFirstOrThrow({ where: { trackerId: 'jt-c' } })).status).toBe('queued');
+    const refill = applyAgent.requests.at(-1)!;
+    expect(refill).toMatchObject({ mode: 'fill', startUrl: linkedinUrl(4000000103) });
+    expect(refill.systemPrompt).toContain('<previous_fill>\n- Phone: +353 1 234\n</previous_fill>');
+    expect(refill.systemPrompt).toContain('Q: Years of TypeScript &lt;experience&gt;?\n  A: 1 year');
+    expect((await database.job.findFirstOrThrow({ where: { trackerId: 'jt-c' } })).status).toBe('skipped');
 
     // A reply to anything else is not an answer.
     await bot.handleUpdate({

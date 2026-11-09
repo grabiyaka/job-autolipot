@@ -6,10 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { allowedTools, denyReasons, disallowedTools } from '../plugins/agent-guard-rules.js';
 import {
-  AgentResponseError, AgentTimeoutError, AgentUnavailableError, agentUploadPath, costMicros, createClaudeAgent, resultTokens, syncAgentFiles,
+  agentArgs, AgentResponseError, AgentTimeoutError, AgentUnavailableError, agentUploadPath, costMicros, createClaudeAgent, resultTokens, syncAgentFiles,
 } from '../plugins/claude-agent.js';
 import type { AgentError, ClaudeAgentConfig } from '../plugins/claude-agent.js';
-import { claudeAgentConfigFromEnv } from '../plugins/environment.js';
+import { agentBackendFromEnv, applySettingsFromEnv, claudeAgentConfigFromEnv } from '../plugins/environment.js';
 
 const fakeClaude = fileURLToPath(new URL('./fixtures/fake-claude.mjs', import.meta.url));
 const root = mkdtempSync(path.join(tmpdir(), 'claude-agent-'));
@@ -296,5 +296,25 @@ describe('agent tokens, cost and settings', () => {
     expect(() => claudeAgentConfigFromEnv({ ...env, DEEPSEEK_PRICE_OUTPUT: '' })).toThrow('DEEPSEEK_PRICE_OUTPUT');
     expect(() => claudeAgentConfigFromEnv({ ...env, DEEPSEEK_PRICE_INPUT: 'cheap' })).toThrow('DEEPSEEK_PRICE_INPUT');
     expect(() => claudeAgentConfigFromEnv({ ...env, APPLY_TIMEOUT_MS: '-1' })).toThrow('APPLY_TIMEOUT_MS');
+  });
+
+  it('runs on the Claude account with APPLY_AGENT=claude: no DeepSeek settings or prices, --model, cost from total_cost_usd', () => {
+    const cfg = claudeAgentConfigFromEnv({ APPLY_AGENT: 'claude' });
+    expect(cfg).toMatchObject({ settingsPath: null, prices: null, model: 'sonnet' });
+    expect(claudeAgentConfigFromEnv({ APPLY_CLAUDE_MODEL: 'opus' }, 'claude').model).toBe('opus');
+    expect(() => agentBackendFromEnv({ APPLY_AGENT: 'gpt' })).toThrow('APPLY_AGENT');
+    const argv = agentArgs({ mcpConfig: 'm.json', systemPromptFile: 's.md' }, cfg, { prompt: 'p', systemPrompt: 's', schema: {}, mode: 'fill' });
+    expect(argv).not.toContain('--settings');
+    expect(argv[argv.indexOf('--model') + 1]).toBe('sonnet');
+    expect(applySettingsFromEnv({}, 'claude').maxUsdPerDay).toBe(10);
+    expect(applySettingsFromEnv({ APPLY_CLAUDE_MAX_USD_PER_DAY: '3' }, 'claude').maxUsdPerDay).toBe(3);
+    expect(applySettingsFromEnv({ APPLY_CLAUDE_MAX_USD_PER_DAY: '3' }, 'deepseek').maxUsdPerDay).toBe(0.5);
+  });
+
+  it('APPLY_AUTO_SUBMIT is off unless it is exactly true', () => {
+    expect(applySettingsFromEnv({}).autoSubmit).toBe(false);
+    expect(applySettingsFromEnv({ APPLY_AUTO_SUBMIT: ' TRUE ' }).autoSubmit).toBe(true);
+    expect(applySettingsFromEnv({ APPLY_AUTO_SUBMIT: 'false' }).autoSubmit).toBe(false);
+    expect(() => applySettingsFromEnv({ APPLY_AUTO_SUBMIT: 'yes' })).toThrow('APPLY_AUTO_SUBMIT');
   });
 });

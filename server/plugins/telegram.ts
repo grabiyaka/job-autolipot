@@ -1,7 +1,9 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { pause as defaultPause } from './http.js';
 
 /**
- * Thin Telegram Bot API client on fetch: the four methods the bot needs. Messages use parse_mode HTML,
+ * Thin Telegram Bot API client on fetch: the methods the bot needs. Messages use parse_mode HTML,
  * so callers escape their text with escapeHtml. The token is part of every URL, therefore errors never
  * carry the URL or the original fetch error — only the method name and Telegram's own description.
  */
@@ -50,7 +52,16 @@ export interface TelegramClient {
   sendMessage(chatId: number, text: string, options?: MessageOptions): Promise<number>;
   editMessageText(chatId: number, messageId: number, text: string, options?: MessageOptions): Promise<void>;
   answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void>;
+  /** Sends image files as albums of up to ten (one file — a single photo); the caption goes on the first one. */
+  sendPhotos(chatId: number, files: readonly string[], caption?: string): Promise<void>;
+  /** Replaces the bot's «/» menu: command names without the slash. */
+  setMyCommands(commands: ReadonlyArray<Readonly<{ command: string; description: string }>>): Promise<void>;
 }
+
+/** Telegram's limit of photos in one album. */
+export const ALBUM_MAX_PHOTOS = 10;
+/** Telegram's limit of a photo caption. */
+export const CAPTION_MAX_LENGTH = 1024;
 
 type ApiResponse<T> = { ok: boolean; result?: T; description?: string; error_code?: number; parameters?: { retry_after?: number } };
 
@@ -88,15 +99,15 @@ export function createTelegramClient(config: TelegramConfig): TelegramClient {
   const maxRetryAfter = config.maxRetryAfterSeconds ?? 300;
   const wait = config.pause ?? defaultPause;
 
-  async function call<T>(method: string, body: Record<string, unknown>, options: { signal?: AbortSignal; extraMs?: number } = {}): Promise<T> {
+  /** `body`: JSON fields, or a function that builds multipart form data anew for every attempt (file uploads). */
+  async function call<T>(method: string, body: Record<string, unknown> | (() => FormData), options: { signal?: AbortSignal; extraMs?: number } = {}): Promise<T> {
     const runSignal = options.signal ?? new AbortController().signal;
     for (let attempt = 0; ; attempt++) {
       let delayMs: number;
       try {
         const response = await fetch(`${base}/bot${config.token}/${method}`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
+          ...(typeof body === 'function' ? { body: body() } : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
           signal: AbortSignal.any([runSignal, AbortSignal.timeout(timeoutMs + (options.extraMs ?? 0))]),
         });
         const data = await response.json().catch(() => null) as ApiResponse<T> | null;
@@ -159,6 +170,34 @@ export function createTelegramClient(config: TelegramConfig): TelegramClient {
 
     async answerCallbackQuery(callbackQueryId, text) {
       await call('answerCallbackQuery', { callback_query_id: callbackQueryId, ...(text ? { text } : {}) });
+    },
+
+    async setMyCommands(commands) {
+      await call('setMyCommands', { commands });
+    },
+
+    async sendPhotos(chatId, files, caption) {
+      for (let start = 0; start < files.length; start += ALBUM_MAX_PHOTOS) {
+        const chunk = files.slice(start, start + ALBUM_MAX_PHOTOS);
+        const photos = await Promise.all(chunk.map(async (file) => ({ name: path.basename(file), data: await readFile(file) })));
+        const text = start === 0 && caption ? splitMessage(caption, CAPTION_MAX_LENGTH)[0]! : null;
+        const form = () => {
+          const data = new FormData();
+          data.set('chat_id', String(chatId));
+          if (photos.length === 1) {
+            data.set('photo', new Blob([photos[0]!.data]), photos[0]!.name);
+            if (text) { data.set('caption', text); data.set('parse_mode', 'HTML'); }
+          } else {
+            data.set('media', JSON.stringify(photos.map((_photo, index) => ({
+              type: 'photo', media: `attach://p${index}`, ...(index === 0 && text ? { caption: text, parse_mode: 'HTML' } : {}),
+            }))));
+            photos.forEach((photo, index) => data.set(`p${index}`, new Blob([photo.data]), photo.name));
+          }
+          return data;
+        };
+        // Uploads take longer than a message.
+        await call(photos.length === 1 ? 'sendPhoto' : 'sendMediaGroup', form, { extraMs: 60_000 });
+      }
     },
   };
 }

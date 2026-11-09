@@ -25,7 +25,8 @@
     "browser:check": "tsx scripts/browser-check.ts",
     "answers": "tsx scripts/answers.ts",
     "bot": "tsx scripts/bot.ts",
-    "apply": "tsx scripts/apply.ts"
+    "apply": "tsx scripts/apply.ts",
+    "autoapply": "tsx scripts/apply.ts --auto --agent claude"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.3",

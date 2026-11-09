@@ -38,9 +38,10 @@ export function jobTrackerConfigFromEnv(env: NodeJS.ProcessEnv = process.env): J
 /**
  * Browser agent settings: APPLY_TIMEOUT_MS, DEEPSEEK_SETTINGS, PLAYWRIGHT_MCP_URL, AGENT_CWD and the DeepSeek
  * prices DEEPSEEK_PRICE_INPUT / _CACHE_READ / _OUTPUT (USD per 1M tokens). The prices have no
- * defaults: without them the cost cannot be counted, so this fails.
+ * defaults: without them the cost cannot be counted, so this fails. The `claude` backend (APPLY_AGENT or the
+ * argument) needs none of DEEPSEEK_*: it runs on the logged-in Claude account with APPLY_CLAUDE_MODEL (sonnet).
  */
-export function claudeAgentConfigFromEnv(env: NodeJS.ProcessEnv = process.env): ClaudeAgentConfig {
+export function claudeAgentConfigFromEnv(env: NodeJS.ProcessEnv = process.env, backend: AgentBackend = agentBackendFromEnv(env)): ClaudeAgentConfig {
   const price = (name: string): number => {
     const raw = env[name]?.trim();
     if (!raw) throw new Error(`${name} не задана: укажите цену DeepSeek в USD за 1M токенов в .env`);
@@ -52,35 +53,54 @@ export function claudeAgentConfigFromEnv(env: NodeJS.ProcessEnv = process.env): 
   const timeoutMs = timeout ? Number(timeout) : defaultApplyTimeoutMs;
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new Error(`APPLY_TIMEOUT_MS должно быть положительным целым, получено "${timeout}"`);
   const settings = env.DEEPSEEK_SETTINGS?.trim() || '~/.config/deepseek/claude-settings.json';
+  const claude = backend === 'claude';
   return {
     claudeBin: 'claude',
-    settingsPath: settings.startsWith('~/') ? path.join(homedir(), settings.slice(2)) : settings,
+    settingsPath: claude ? null : settings.startsWith('~/') ? path.join(homedir(), settings.slice(2)) : settings,
+    ...(claude ? { model: env.APPLY_CLAUDE_MODEL?.trim() || 'sonnet' } : {}),
     mcpUrl: env.PLAYWRIGHT_MCP_URL?.trim() || defaultMcpUrl,
     workDir: defaultAgentWorkDir,
     agentCwd: env.AGENT_CWD?.trim() || defaultAgentCwd,
     timeoutMs,
-    prices: { input: price('DEEPSEEK_PRICE_INPUT'), cacheRead: price('DEEPSEEK_PRICE_CACHE_READ'), output: price('DEEPSEEK_PRICE_OUTPUT') },
+    prices: claude ? null : { input: price('DEEPSEEK_PRICE_INPUT'), cacheRead: price('DEEPSEEK_PRICE_CACHE_READ'), output: price('DEEPSEEK_PRICE_OUTPUT') },
   };
+}
+
+/** `deepseek` — claude -p on DeepSeek (DEEPSEEK_*); `claude` — the logged-in Claude account (APPLY_CLAUDE_MODEL). */
+export type AgentBackend = 'deepseek' | 'claude';
+
+/** APPLY_AGENT: deepseek (default) or claude. */
+export function agentBackendFromEnv(env: NodeJS.ProcessEnv = process.env): AgentBackend {
+  const raw = env.APPLY_AGENT?.trim().toLowerCase() || 'deepseek';
+  if (raw !== 'deepseek' && raw !== 'claude') throw new Error(`APPLY_AGENT должно быть deepseek или claude, получено "${env.APPLY_AGENT}"`);
+  return raw;
 }
 
 export type ApplyEnvSettings = Readonly<{
   /** APPLY_MAX_PER_RUN: agent runs per fill call (default 5). */
   maxPerRun: number;
-  /** APPLY_MAX_USD_PER_DAY: spent on attempts since 00:00 UTC (default 0.5). */
+  /** APPLY_MAX_USD_PER_DAY (DeepSeek, default 0.5) or APPLY_CLAUDE_MAX_USD_PER_DAY (Claude, default 10, list prices): spent on attempts since 00:00 UTC. */
   maxUsdPerDay: number;
   /** APPLY_CV_FILE: the CV's file name in /srv/agent-files; null — the only PDF there is taken. */
   cvFile: string | null;
   /** AGENT_CWD of the agent: the CV copy is uploaded from its files/. */
   agentCwd: string;
+  /** APPLY_AUTO_SUBMIT=true: the agent sends forms itself, without ✅ (default false). */
+  autoSubmit: boolean;
 }>;
 
 /** Limits and the CV of applying; unlike the agent config, nothing here is required. */
-export function applySettingsFromEnv(env: NodeJS.ProcessEnv = process.env): ApplyEnvSettings {
+export function applySettingsFromEnv(env: NodeJS.ProcessEnv = process.env, backend: AgentBackend = agentBackendFromEnv(env)): ApplyEnvSettings {
   const maxRaw = env.APPLY_MAX_PER_RUN?.trim();
   const maxPerRun = maxRaw ? Number(maxRaw) : 5;
   if (!Number.isInteger(maxPerRun) || maxPerRun <= 0) throw new Error(`APPLY_MAX_PER_RUN должно быть положительным целым, получено "${maxRaw}"`);
-  const usdRaw = env.APPLY_MAX_USD_PER_DAY?.trim();
-  const maxUsdPerDay = usdRaw ? Number(usdRaw) : 0.5;
-  if (!Number.isFinite(maxUsdPerDay) || maxUsdPerDay < 0) throw new Error(`APPLY_MAX_USD_PER_DAY должно быть неотрицательным числом, получено "${usdRaw}"`);
-  return { maxPerRun, maxUsdPerDay, cvFile: env.APPLY_CV_FILE?.trim() || null, agentCwd: env.AGENT_CWD?.trim() || defaultAgentCwd };
+  const usdName = backend === 'claude' ? 'APPLY_CLAUDE_MAX_USD_PER_DAY' : 'APPLY_MAX_USD_PER_DAY';
+  const usdRaw = env[usdName]?.trim();
+  const maxUsdPerDay = usdRaw ? Number(usdRaw) : backend === 'claude' ? 10 : 0.5;
+  if (!Number.isFinite(maxUsdPerDay) || maxUsdPerDay < 0) throw new Error(`${usdName} должно быть неотрицательным числом, получено "${usdRaw}"`);
+  const autoRaw = env.APPLY_AUTO_SUBMIT?.trim().toLowerCase() || 'false';
+  if (!['true', 'false'].includes(autoRaw)) throw new Error(`APPLY_AUTO_SUBMIT должно быть true или false, получено "${env.APPLY_AUTO_SUBMIT}"`);
+  return {
+    maxPerRun, maxUsdPerDay, cvFile: env.APPLY_CV_FILE?.trim() || null, agentCwd: env.AGENT_CWD?.trim() || defaultAgentCwd, autoSubmit: autoRaw === 'true',
+  };
 }

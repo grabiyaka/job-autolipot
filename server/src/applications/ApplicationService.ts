@@ -11,18 +11,18 @@ import type { ApplicationRepository } from './ApplicationRepository.js';
 import {
   appliedByHandNote, applyStartUrl, attemptKind, budgetDayStart, buildApplyPrompt, buildSubmitFreshPrompt, buildSubmitPrompt,
   decideByOutcome, fillOutcomes, fillSchema, httpsPageUrl, maybeSubmitted, notHttpsNote, parseAgentAnswer, questionTexts, rejectedByHandNote,
-  requireHttpsForm, submitFreshOutcomes, webPageUrl,
+  requireHttpsForm, submitFreshOutcomes, unconfirmedNote, webPageUrl,
   submitFreshSchema, submitOutcomes, submitSchema, trackerChannel, trackerChannels, trackerNote, usd, withinBudget,
 } from './ApplicationRules.js';
-import type { AgentAnswer, SubmitFreshOutcome } from './ApplicationRules.js';
+import type { AgentAnswer, FillOutcome, SubmitFreshOutcome } from './ApplicationRules.js';
 import type {
   AnswerReport, ApplicationApi, ApplicationDetails, ApplicationStatus, ApplicationView, FillLine, FillOptions, FillReport, FillStop,
-  PendingView, QuestionView, SubmitReport, TrackerMarkOutcome, TrackerResend,
+  PendingView, QuestionView, SubmitReport, SubmittedView, TrackerMarkOutcome, TrackerResend,
 } from './ApplicationTypes.js';
 
 export { applicationKinds, applicationStatuses, questionStatuses } from './ApplicationTypes.js';
 export type {
-  ApplicationDetails, ApplicationKind, ApplicationStatus, ApplicationView, FilledField, FillReport, QuestionView, SubmitReport,
+  ApplicationDetails, ApplicationKind, ApplicationStatus, ApplicationView, FilledField, FillReport, QuestionView, SubmitReport, SubmittedView,
 } from './ApplicationTypes.js';
 
 /** An attempt with what only this domain needs: the agent session, the job's Job-Tracker link and the mark's channel. */
@@ -106,6 +106,7 @@ export class ApplicationService implements ApplicationApi {
     const lines: FillLine[] = [];
     const ready: ApplicationView[] = [];
     const manual: ApplicationView[] = [];
+    const submitted: SubmittedView[] = [];
     const questions: QuestionView[] = [];
     let stopped: FillStop = 'end';
     let runs = 0;
@@ -129,13 +130,16 @@ export class ApplicationService implements ApplicationApi {
         lines.push(attempt.line);
         if (attempt.ready) ready.push(attempt.ready);
         if (attempt.manual) manual.push(attempt.manual);
+        if (attempt.submitted) submitted.push(attempt.submitted);
         questions.push(...attempt.questions);
         if (attempt.aborted) { stopped = 'aborted'; break; }
       }
     } finally {
       lock.release();
     }
-    return { lines, stopped, spentTodayMicros: await this.spentToday(ownerId), budgetMicros: this.settings.maxMicrosPerDay, resent, ready, questions, manual };
+    return {
+      lines, stopped, spentTodayMicros: await this.spentToday(ownerId), budgetMicros: this.settings.maxMicrosPerDay, resent, ready, questions, manual, submitted,
+    };
   }
 
   /** A job page the agent cannot open (not https): a `manual` attempt with the link, no agent run. */
@@ -152,7 +156,9 @@ export class ApplicationService implements ApplicationApi {
   /** One agent run for one job, recorded as an attempt. */
   private async fillOne(
     ownerId: string, agent: ApplyAgent, job: PipelineJob, profileMarkdown: string, cvPath: string, signal: AbortSignal | undefined,
-  ): Promise<{ line: FillLine; ready: ApplicationView | null; manual: ApplicationView | null; questions: QuestionView[]; aborted: boolean }> {
+  ): Promise<{
+    line: FillLine; ready: ApplicationView | null; manual: ApplicationView | null; submitted: SubmittedView | null; questions: QuestionView[]; aborted: boolean;
+  }> {
     await this.applications.markQuestionsUsed(ownerId, job.id);
     await this.toApplying(ownerId, job);
     const attempt = await this.applications.create(ownerId, job.id, this.clock.now());
@@ -161,49 +167,77 @@ export class ApplicationService implements ApplicationApi {
     });
 
     const startUrl = applyStartUrl(job.url)!;
-    const { systemPrompt, prompt } = buildApplyPrompt(profileMarkdown, await this.answers.listForUser(ownerId), job, cvPath);
+    // APPLY_AUTO_SUBMIT: the run sends the form itself; the guard lets one send click through (submit_fresh).
+    const auto = this.settings.autoSubmit;
+    const draft = await this.applications.latestDraft(ownerId, job.id);
+    const { systemPrompt, prompt } = buildApplyPrompt(profileMarkdown, await this.answers.listForUser(ownerId), job, cvPath, auto ? 'auto' : 'fill', draft);
     let result: ApplyAgentResult;
     try {
-      result = await agent.run({ prompt, systemPrompt, schema: fillSchema, mode: 'fill', startUrl, ...(signal ? { signal } : {}) });
+      result = await agent.run({
+        prompt, systemPrompt, schema: auto ? submitFreshSchema : fillSchema, mode: auto ? 'submit_fresh' : 'fill', startUrl,
+        ...(signal ? { signal } : {}),
+      });
     } catch (error) {
       const failure = error instanceof ApplyAgentError ? error : null;
       const aborted = Boolean(failure?.details.aborted || signal?.aborted);
+      // A send click may already have gone through: such a job is never filled (and sent) again by itself.
+      const unsure = auto && maybeSubmitted(failure?.details.toolCalls ?? []);
       // A stop or a missing agent is not the job's fault: it goes back to the queue.
-      const requeue = aborted || Boolean(failure?.details.unavailable) || !failure;
-      const note = aborted ? 'остановлено' : `ошибка агента: ${message(error)}`;
+      const requeue = !unsure && (aborted || Boolean(failure?.details.unavailable) || !failure);
+      const reason = aborted ? 'остановлено' : `ошибка агента: ${message(error)}`;
+      const note = unsure ? unconfirmedNote(job.url, reason) : reason;
       await this.applications.finish(ownerId, attempt.id, ['running'], {
         status: 'failed', note, finishedAt: this.clock.now(),
         tokens: failure?.spend.tokens ?? { input: 0, cacheRead: 0, output: 0 }, costMicros: failure?.spend.costMicros ?? 0,
         sessionId: failure?.details.sessionId ?? null,
-        result: JSON.stringify({ error: message(error), runDir: failure?.details.runDir ?? null, toolCalls: failure?.details.toolCalls ?? [] }),
+        result: JSON.stringify({
+          error: message(error), runDir: failure?.details.runDir ?? null, toolCalls: failure?.details.toolCalls ?? [], screenshots: failure?.details.screenshots ?? [],
+        }),
       });
       await this.jobs.recordApplyStatus(ownerId, job.id, requeue ? 'queued' : 'failed', requeue ? undefined : note);
       if (failure?.details.unavailable) throw new ApplicationError('AGENT_UNAVAILABLE', failure.message, 503);
       if (!failure && !aborted) throw error;
-      return { line: line('failed', note, failure?.spend.costMicros ?? 0), ready: null, manual: null, questions: [], aborted };
+      return { line: line('failed', note, failure?.spend.costMicros ?? 0), ready: null, manual: null, submitted: null, questions: [], aborted };
     }
 
-    const answer = parseAgentAnswer(result.output, fillOutcomes);
+    const answer = parseAgentAnswer<FillOutcome | SubmitFreshOutcome>(result.output, auto ? submitFreshOutcomes : fillOutcomes);
     // The form's page: where ✅ starts for an external form and the link for `manual`; the job page when the agent gave none.
     const kind = attemptKind(answer?.kind ?? null, job.url);
     const applyUrl = answer?.applyUrl ?? startUrl;
-    const decision = answer
+    let decision = answer
       ? requireHttpsForm(decideByOutcome(answer.outcome, answer.summary), kind, applyUrl)
       : { application: 'failed' as const, job: 'failed' as const, note: 'ответ агента не по схеме' };
+    if (auto && decision.application !== 'submitted' && maybeSubmitted(result.toolCalls)) {
+      // The send click went through, but the agent did not confirm it: the owner checks, nothing is filled again.
+      decision = { application: 'failed', job: 'failed', note: unconfirmedNote(applyUrl, decision.note) };
+    }
+    const sent = decision.application === 'submitted';
     await this.applications.finish(ownerId, attempt.id, ['running'], {
       status: decision.application, note: decision.note, finishedAt: this.clock.now(), sessionId: result.sessionId,
-      tokens: result.tokens, costMicros: result.costMicros, kind, applyUrl,
-      result: JSON.stringify({ answer: answer ?? result.output, turns: result.turns, durationMs: result.durationMs, runDir: result.runDir, toolCalls: result.toolCalls }),
+      tokens: result.tokens, costMicros: result.costMicros, kind, applyUrl, ...(sent ? { trackerChannel: trackerChannel(kind) } : {}),
+      result: JSON.stringify({
+        answer: answer ?? result.output, turns: result.turns, durationMs: result.durationMs, runDir: result.runDir, toolCalls: result.toolCalls,
+        screenshots: result.screenshots,
+      }),
     });
     if (decision.job) await this.jobs.recordApplyStatus(ownerId, job.id, decision.job, decision.note);
     const questions = answer && decision.application === 'needs_input'
       ? await this.applications.createQuestions(attempt.id, questionTexts(answer), this.clock.now())
       : [];
+    let submitted: SubmittedView | null = null;
+    if (sent) {
+      const marked = await this.markTracker(ownerId, await this.owned(ownerId, attempt.id), this.clock.now());
+      submitted = {
+        application: view(await this.owned(ownerId, attempt.id)), screenshots: result.screenshots,
+        tracker: marked?.message ?? 'в Job-Tracker вакансия не связана',
+      };
+    }
     const saved = await this.owned(ownerId, attempt.id);
     return {
-      line: line(decision.application, decision.note, result.costMicros),
+      line: line(saved.status, decision.note, result.costMicros),
       ready: decision.application === 'ready' ? view(saved) : null,
       manual: decision.application === 'manual' ? view(saved) : null,
+      submitted,
       questions,
       aborted: false,
     };

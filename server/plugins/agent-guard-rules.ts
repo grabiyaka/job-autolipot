@@ -56,6 +56,8 @@ export const disallowedTools = [
 export const agentFilesDir = '/srv/agent-files/';
 /** One JSON line per tool call, in the attempt's folder (APPLY_GUARD_DIR). */
 export const guardLogFile = 'guard-log.jsonl';
+/** Subfolder of the run where the hook saves the images of browser_take_screenshot (001.png, 002.jpeg…). */
+export const screenshotsDir = 'screenshots';
 
 export type GuardState = Readonly<{
   submitClicks: number;
