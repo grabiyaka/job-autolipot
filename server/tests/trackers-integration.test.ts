@@ -79,6 +79,7 @@ class FakeTracker implements JobTrackerClient {
   // Applying is tested in applications.test.ts.
   async listToApply() { return { items: [], nextCursor: null }; }
   async markApplied() { return { status: 'not_found' as const }; }
+  async handOff() { return 'not_found' as const; }
 }
 
 describe('Trackers: Job-Tracker link, profile cache and push on SQLite', () => {

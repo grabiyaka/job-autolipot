@@ -1,7 +1,7 @@
 import { createHttpRequest, HttpError, pause } from './http.js';
 import { TrackerError } from '../src/trackers/TrackerTypes.js';
 import type {
-  JobTrackerClient, TrackerApplicationInput, TrackerEvaluationInput, TrackerMarkResult, TrackerToApplyPage, TrackerJobInput, TrackerJobPage, TrackerProfileContext, TrackerPushResult, TrackerUser,
+  JobTrackerClient, TrackerApplicationInput, TrackerHandoffInput, TrackerHandoffResult, TrackerEvaluationInput, TrackerMarkResult, TrackerToApplyPage, TrackerJobInput, TrackerJobPage, TrackerProfileContext, TrackerPushResult, TrackerUser,
   TrackerWorklistQuery,
 } from '../src/trackers/TrackerTypes.js';
 
@@ -99,7 +99,8 @@ export function createJobTrackerClient(config: JobTrackerConfig): JobTrackerClie
     },
 
     async listToApply(cursor?: string | null): Promise<TrackerToApplyPage> {
-      const search = new URLSearchParams({ evaluation: 'any', limit: '100' });
+      // Jobs already handed off to the owner are not the agent's any more.
+      const search = new URLSearchParams({ evaluation: 'any', handoff: 'exclude', limit: '100' });
       if (cursor) search.set('cursor', cursor);
       type Row = { id: string; jobTitle?: string; companyName?: string; vacancyUrl?: string; source?: string | null };
       const body = await (await call('GET', `/api/ai/jobs?${search}`)).json() as { items: Row[]; nextCursor: string | null };
@@ -109,6 +110,17 @@ export function createJobTrackerClient(config: JobTrackerConfig): JobTrackerClie
         })),
         nextCursor: body.nextCursor ?? null,
       };
+    },
+
+    async handOff(trackerJobId: string, input: TrackerHandoffInput): Promise<TrackerHandoffResult> {
+      try {
+        const response = await call('POST', `/api/ai/jobs/${encodeURIComponent(trackerJobId)}/handoff`, { body: input });
+        await response.body?.cancel();
+        return 'handed_off';
+      } catch (error) {
+        if (error instanceof TrackerError && error.status === 404) return 'not_found';
+        throw error;
+      }
     },
 
     async markApplied(trackerJobId: string, input: TrackerApplicationInput): Promise<TrackerMarkResult> {

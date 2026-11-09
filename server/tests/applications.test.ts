@@ -354,6 +354,12 @@ describe('ApplicationService on SQLite with a fake agent and a fake Job-Tracker'
     expect((await jobOf('jt-4')).status).toBe('manual');
     expect(await jobOf('jt-3b')).toMatchObject({ status: 'manual', why: 'подать вручную: не https-ссылка' });
     expect(fillLines(report).join('\n')).toContain(`--manual-applied ${report.manual[0]!.id}`);
+    // All three go to the owner's Manual Apply page in Job-Tracker; only https form links are passed on.
+    expect(tracker.handoffs).toEqual([
+      { jobId: 'jt-3', input: { reason: expect.stringMatching(/нужен аккаунт/), agentName: 'job-autopilot/deepseek', applyUrl: 'https://tudublin.wd3.myworkdayjobs.com/apply/123' } },
+      { jobId: 'jt-4', input: expect.objectContaining({ reason: expect.stringMatching(/капча/), applyUrl: linkedinUrl(4000000004) }) },
+      { jobId: 'jt-3b', input: { reason: 'подать вручную: не https-ссылка', agentName: 'job-autopilot/deepseek' } },
+    ]);
 
     const pending = await applier.applications.pending(ownerId);
     expect(pending.manual.map((item) => item.id).sort()).toEqual(report.manual.map((item) => item.id).sort());
@@ -555,12 +561,26 @@ describe('ApplicationService on SQLite with a fake agent and a fake Job-Tracker'
     ]);
     expect(await jobOf('jt-10')).toMatchObject({ status: 'failed', why: 'ошибка агента: таймаут' });
     expect((await jobOf('jt-11')).status).toBe('queued');
+    // The failed job goes to the owner; the stopped one stays the agent's.
+    expect(tracker.handoffs).toEqual([{ jobId: 'jt-10', input: expect.objectContaining({ reason: 'ошибка агента: таймаут' }) }]);
 
     agent.steps.push(agentAnswer('ready_to_submit'), agentAnswer('failed', { summary: 'форма закрыта' }));
     const { ready: [attempt] } = await applier.applications.fillNext(ownerId, { jobId: 'jt-11' });
     const failed = await applier.applications.submit(ownerId, attempt!.id);
     expect(failed).toMatchObject({ tracker: null, application: { status: 'failed' } });
     expect((await jobOf('jt-11')).status).toBe('queued');
+    // Filled again on its own (no allowed click): not handed off.
+    expect(tracker.handoffs.map((handoff) => handoff.jobId)).toEqual(['jt-10']);
+  });
+
+  it('a Job-Tracker outage during the handoff does not break applying', async () => {
+    tracker.toApply = [row('jt-12', linkedinUrl(4000000012)), row('jt-13', linkedinUrl(4000000013))];
+    tracker.handoffDown = true;
+    agent.steps.push(agentAnswer('manual', { summary: 'капча' }), agentAnswer('ready_to_submit'));
+    const report = await applier.applications.fillNext(ownerId);
+    expect(report.lines.map((line) => line.status)).toEqual(['manual', 'ready']);
+    expect((await jobOf('jt-12')).status).toBe('manual');
+    expect(tracker.handoffs).toEqual([]);
   });
 });
 

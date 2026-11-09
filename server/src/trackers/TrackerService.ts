@@ -6,7 +6,7 @@ import type { UserApi } from '../users/UserTypes.js';
 import type { TrackerRepository } from './TrackerRepository.js';
 import { trackerBatchLimit, TrackerError } from './TrackerTypes.js';
 import type {
-  JobTrackerClient, TrackerApi, TrackerApplyApi, TrackerEvaluationInput, TrackerJobInput, TrackerMarkResult, TrackerProfile, TrackerPushOptions,
+  JobTrackerClient, TrackerApi, TrackerApplyApi, TrackerEvaluationInput, TrackerHandoffResult, TrackerJobInput, TrackerMarkResult, TrackerProfile, TrackerPushOptions,
   TrackerPushReport, TrackerPushResult, TrackerToApplyJob, TrackerUser, TrackerVerdict,
 } from './TrackerTypes.js';
 
@@ -265,6 +265,16 @@ export class TrackerService implements TrackerApi, TrackerApplyApi {
     return client.markApplied(trackerJobId, {
       appliedAt: details.appliedAt.toISOString(), channel: details.channel || trackerApplyChannel, agentName: trackerAgentName,
       ...(details.note ? { note: details.note.slice(0, 20_000) } : {}),
+    });
+  }
+
+  async handOff(ownerId: string, trackerJobId: string, details: Readonly<{ reason: string; applyUrl?: string | null }>): Promise<TrackerHandoffResult> {
+    const client = this.requireClient();
+    await this.requireLinked(client, ownerId);
+    return client.handOff(trackerJobId, {
+      reason: details.reason.trim().slice(0, 5_000) || 'агент не смог подать',
+      agentName: trackerAgentName,
+      ...(details.applyUrl ? { applyUrl: details.applyUrl.slice(0, 2_000) } : {}),
     });
   }
 

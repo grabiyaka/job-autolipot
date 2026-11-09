@@ -155,6 +155,7 @@ export class ApplicationService implements ApplicationApi {
       status: 'manual', note: notHttpsNote, finishedAt: this.clock.now(), ...noSpend, kind: 'external', applyUrl: webPageUrl(job.url),
     });
     await this.jobs.recordApplyStatus(ownerId, job.id, 'manual', notHttpsNote);
+    await this.handOff(ownerId, job.id, notHttpsNote, null);
     return view(await this.owned(ownerId, attempt.id));
   }
 
@@ -209,6 +210,7 @@ export class ApplicationService implements ApplicationApi {
         }),
       });
       await this.jobs.recordApplyStatus(ownerId, job.id, requeue ? 'queued' : 'failed', requeue ? undefined : note);
+      if (!requeue) await this.handOff(ownerId, job.id, note, null);
       if (failure?.details.unavailable) throw new ApplicationError('AGENT_UNAVAILABLE', failure.message, 503);
       if (!failure && !aborted) throw error;
       return { line: line('failed', note, failure?.spend.costMicros ?? 0), ready: null, manual: null, submitted: null, questions: [], aborted };
@@ -235,6 +237,7 @@ export class ApplicationService implements ApplicationApi {
       }),
     });
     if (decision.job) await this.jobs.recordApplyStatus(ownerId, job.id, decision.job, decision.note);
+    if (decision.job === 'manual' || decision.job === 'failed') await this.handOff(ownerId, job.id, decision.note, applyUrl);
     const questions = answer && decision.application === 'needs_input'
       ? await this.applications.createQuestions(attempt.id, questionTexts(answer), this.clock.now())
       : [];
@@ -346,6 +349,7 @@ export class ApplicationService implements ApplicationApi {
       const note = `${notHttpsNote} (${attempt.applyUrl ?? 'нет адреса формы'})`;
       await this.applications.finish(ownerId, attempt.id, ['ready'], { status: 'manual', note, finishedAt: this.clock.now(), ...noSpend });
       await this.jobs.recordApplyStatus(ownerId, attempt.jobId, 'manual', note);
+      await this.handOff(ownerId, attempt.jobId, note, null);
       return { application: view(await this.owned(ownerId, attempt.id)), tracker: null, message: `не отправлено: ${note}` };
     }
     const agent = this.requireAgent();
@@ -391,6 +395,9 @@ export class ApplicationService implements ApplicationApi {
       ...(answer.applyUrl ? { applyUrl: answer.applyUrl } : {}),
     });
     if (decision.job) await this.jobs.recordApplyStatus(ownerId, attempt.jobId, decision.job, decision.note);
+    if (decision.job === 'manual' || decision.job === 'failed') {
+      await this.handOff(ownerId, attempt.jobId, decision.note, answer.applyUrl ?? attempt.applyUrl);
+    }
     if (decision.application === 'needs_input') await this.applications.createQuestions(attempt.id, questionTexts(answer), this.clock.now());
     return { application: view(await this.owned(ownerId, attempt.id)), tracker: null, message: `не отправлено: ${decision.note}` };
   }
@@ -450,7 +457,24 @@ export class ApplicationService implements ApplicationApi {
     const note = unsure ? `отправка не подтверждена — проверьте ${where}; ${reason}` : `не отправлено, будет заполнено заново; ${reason}`;
     await this.applications.finish(ownerId, attempt.id, ['ready'], { status: 'failed', note, finishedAt: this.clock.now(), tokens: spend.tokens, costMicros: spend.costMicros });
     await this.jobs.recordApplyStatus(ownerId, attempt.jobId, unsure ? 'failed' : 'queued', unsure ? note : undefined);
+    if (unsure) await this.handOff(ownerId, attempt.jobId, note, attempt.applyUrl);
     return { application: view(await this.owned(ownerId, attempt.id)), tracker: null, message: note };
+  }
+
+  /**
+   * The agent gave up on the job (`manual`, or `failed` that is not retried by itself): Job-Tracker moves it
+   * from To Apply to the owner's Manual Apply page with the reason and the form's link, so the next runs
+   * do not see it. Best effort: a JT outage, a refusal or an unlinked JT never breaks applying.
+   */
+  private async handOff(ownerId: string, jobId: string, reason: string, applyUrl: string | null | undefined): Promise<void> {
+    if (!this.tracker.configured) return;
+    const job = await this.jobs.findById(ownerId, jobId);
+    if (!job?.trackerId) return;
+    try {
+      await this.tracker.handOff(ownerId, job.trackerId, { reason, applyUrl: httpsPageUrl(applyUrl) });
+    } catch (error) {
+      if (!(error instanceof TrackerError) && !(error instanceof ApplicationError)) throw error;
+    }
   }
 
   /**

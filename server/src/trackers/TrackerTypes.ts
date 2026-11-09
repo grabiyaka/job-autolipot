@@ -53,6 +53,12 @@ export type TrackerToApplyPage = Readonly<{ items: TrackerToApplyJob[]; nextCurs
 /** Body of `POST /api/ai/jobs/:id/application` (strict on JT's side). */
 export type TrackerApplicationInput = Readonly<{ appliedAt?: string; channel: string; agentName: string; note?: string }>;
 
+/** Body of `POST /api/ai/jobs/:id/handoff`: the agent cannot apply, the owner does it on JT's Manual Apply page. */
+export type TrackerHandoffInput = Readonly<{ reason: string; agentName: string; applyUrl?: string }>;
+
+/** `handed_off` (200, also on a repeat); `not_found` (404): the job is no longer in To Apply. */
+export type TrackerHandoffResult = 'handed_off' | 'not_found';
+
 /**
  * `created` (201) and `already_applied` (200) both mean "JT has it as APPLIED".
  * `not_found` (404): the job is no longer in To Apply (converted by hand) — not to be retried.
@@ -76,8 +82,10 @@ export interface JobTrackerClient {
   listJobs(query: TrackerWorklistQuery): Promise<TrackerJobPage>;
   /** Appends an evaluation to a JT opportunity. */
   recordEvaluation(trackerJobId: string, evaluation: TrackerEvaluationInput): Promise<void>;
-  /** A page (up to 100) of To Apply rows with title, company and URL, oldest first. */
+  /** A page (up to 100) of To Apply rows with title, company and URL, oldest first; jobs handed off to the owner are left out. */
   listToApply(cursor?: string | null): Promise<TrackerToApplyPage>;
+  /** Moves the job from To Apply to the owner's Manual Apply list in JT. */
+  handOff(trackerJobId: string, input: TrackerHandoffInput): Promise<TrackerHandoffResult>;
   /** Turns the To Apply row into an APPLIED Application; call only after a real submit. */
   markApplied(trackerJobId: string, input: TrackerApplicationInput): Promise<TrackerMarkResult>;
 }
@@ -153,6 +161,11 @@ export interface TrackerApplyApi {
    * Outages and refusals are thrown as TrackerError, so the caller can retry later.
    */
   markApplied(ownerId: string, trackerJobId: string, details: Readonly<{ appliedAt: Date; note?: string; channel?: string }>): Promise<TrackerMarkResult>;
+  /**
+   * The agent cannot apply (`manual`, or `failed` for good): JT moves the job to the owner's Manual Apply
+   * page with the reason and the form's link, and stops listing it in To Apply. JT failures are thrown.
+   */
+  handOff(ownerId: string, trackerJobId: string, details: Readonly<{ reason: string; applyUrl?: string | null }>): Promise<TrackerHandoffResult>;
   /** False when JOB_TRACKER_URL / JOB_TRACKER_TOKEN are not set. */
   readonly configured: boolean;
 }

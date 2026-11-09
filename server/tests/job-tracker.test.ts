@@ -115,6 +115,22 @@ describe('Job-Tracker plugin against a fake JT server', () => {
     ]);
   });
 
+  it('reads To Apply without handed-off jobs and hands a job off (404 = not in To Apply)', async () => {
+    handler = (request, response) => {
+      if (request.method === 'GET') return json(response, 200, { items: [{ id: 'jt-1', jobTitle: 'A', vacancyUrl: 'https://x.test/1' }], nextCursor: null });
+      if (request.url.includes('gone')) return json(response, 404, { error: { code: 'NOT_FOUND' } });
+      return json(response, 200, { contractVersion: 1, jobId: 'jt-1', handoff: {} });
+    };
+    await client().listToApply();
+    expect(seen[0]!.url).toBe('/api/ai/jobs?evaluation=any&handoff=exclude&limit=100');
+
+    const input = { reason: 'Workday: account', agentName: 'job-autopilot/deepseek', applyUrl: 'https://x.wd3.myworkdayjobs.com/a' };
+    await expect(client().handOff('jt/1', input)).resolves.toBe('handed_off');
+    expect(seen[1]).toMatchObject({ method: 'POST', url: '/api/ai/jobs/jt%2F1/handoff' });
+    expect(JSON.parse(seen[1]!.body)).toEqual(input);
+    await expect(client().handOff('gone', input)).resolves.toBe('not_found');
+  });
+
   it('appends an evaluation with PATCH', async () => {
     handler = (_request, response) => json(response, 201, { id: 'ev-1' });
     const evaluation = { score: 85, verdict: 'STRONG_FIT', summary: 'Fits', profileRevision: 3, evaluatorName: 'job-autopilot' } as const;

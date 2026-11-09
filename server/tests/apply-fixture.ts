@@ -9,7 +9,7 @@ import { JobRepository } from '../src/jobs/JobRepository.js';
 import { JobService } from '../src/jobs/JobService.js';
 import { TrackerError } from '../src/trackers/TrackerTypes.js';
 import type {
-  JobTrackerClient, TrackerApplicationInput, TrackerMarkResult, TrackerProfileContext, TrackerToApplyJob, TrackerToApplyPage,
+  JobTrackerClient, TrackerApplicationInput, TrackerHandoffInput, TrackerHandoffResult, TrackerMarkResult, TrackerProfileContext, TrackerToApplyJob, TrackerToApplyPage,
 } from '../src/trackers/TrackerTypes.js';
 
 /** Fakes for applying: an in-memory Job-Tracker, a scripted agent and a service on the test database. */
@@ -22,6 +22,8 @@ export class FakeApplyTracker implements JobTrackerClient {
   toApply: TrackerToApplyJob[] = [];
   marks: { jobId: string; input: TrackerApplicationInput }[] = [];
   markMode: 'created' | 'already_applied' | 'not_found' | 'conflict' | 'down' = 'created';
+  handoffs: { jobId: string; input: TrackerHandoffInput }[] = [];
+  handoffDown = false;
 
   async whoami() { return { user: { id: 'jt-user', email: this.email, name: null } }; }
   async profileContext(): Promise<TrackerProfileContext> {
@@ -32,9 +34,17 @@ export class FakeApplyTracker implements JobTrackerClient {
   async recordEvaluation() {}
   async listToApply(cursor?: string | null): Promise<TrackerToApplyPage> {
     // Pages of two, to see that the service reads them all.
+    // Like JT with handoff=exclude: a handed-off job is no longer listed.
+    const listed = this.toApply.filter((item) => !this.handoffs.some((handoff) => handoff.jobId === item.id));
     const start = cursor ? Number(cursor) : 0;
-    const items = this.toApply.slice(start, start + 2);
-    return { items, nextCursor: start + 2 < this.toApply.length ? String(start + 2) : null };
+    const items = listed.slice(start, start + 2);
+    return { items, nextCursor: start + 2 < listed.length ? String(start + 2) : null };
+  }
+  async handOff(jobId: string, input: TrackerHandoffInput): Promise<TrackerHandoffResult> {
+    if (this.handoffDown) throw new TrackerError('unavailable', 'Job-Tracker недоступен.');
+    if (!this.toApply.some((item) => item.id === jobId)) return 'not_found';
+    this.handoffs = [...this.handoffs.filter((handoff) => handoff.jobId !== jobId), { jobId, input }];
+    return 'handed_off';
   }
   async markApplied(jobId: string, input: TrackerApplicationInput): Promise<TrackerMarkResult> {
     this.marks.push({ jobId, input });
