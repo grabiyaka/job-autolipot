@@ -20,7 +20,8 @@
 4. ✅ **Подача.** Агент заполняет форму LinkedIn Easy Apply из To Apply и останавливается перед Submit;
    отправка — после твоего ✅, затем отметка APPLIED в JT (⏳ живая проверка).
 5. ✅ **Telegram и расписание.** Бот запускает сбор, оценку и заполнение вручную и по cron, присылает
-   отчёт, показывает статус и банк ответов, формы с ✅ / ❌ и вопросы агента (ответ реплаем).
+   отчёт, показывает статус и банк ответов, формы с ✅ / ❌ и вопросы агента (ответ реплаем). Команды —
+   в меню «/» Telegram; сайт с аккаунтом можно пройти с телефона в браузере агента (удалённый браузер).
 
 Итог сейчас: одна команда сбора и одна команда оценки (или бот по расписанию) превращают выдачу
 LinkedIn в короткий список оценённых вакансий в JT; `npm run apply` (или `/run apply`) заполняет формы
@@ -70,7 +71,8 @@ LinkedIn в короткий список оценённых вакансий в
 Всё это одной командой — `npm run cycle` ([scripts/cycle.ts](../server/scripts/cycle.ts)): сбор, затем
 отбор всех `found` (и новых, и оставшихся с прошлых прогонов), затем отправка в JT. Отдельно этапы
 запускаются `npm run collect` и `npm run score`. Те же прогоны запускает Telegram-бот (`npm run bot`):
-командой `/run` или по расписанию ([telegram.md](telegram.md)).
+командой `/run <задача>` (или короче `/cycle`, `/collect`, `/score`, `/apply` из меню «/») или по
+расписанию ([telegram.md](telegram.md)).
 
 ### Где живут данные
 
@@ -115,7 +117,7 @@ LinkedIn в короткий список оценённых вакансий в
 | `applying` | `applied`, `needs_input`, `failed` | applier: отправлено после ✅, нужен ответ, агент не справился |
 | `applying` | `manual` | applier: подать может только владелец (аккаунт, капча, Workday, не https) |
 | `applying` | `queued`, `skipped` | **только applier**: прогон остановлен / форма заполняется заново; закрыта, ❌ |
-| `manual` | `applied`, `queued`, `skipped` | applier: «подал сам» / заполнить заново (`--job`) / ❌ |
+| `manual` | `applied`, `queued`, `skipped` | applier: «подал сам» / заполнить заново (`--job`, или «✅ Аккаунт готов» после удалённого браузера) / ❌ |
 | `needs_input` | `queued`, `applying`, `skipped` | applier: на все вопросы ответили → `queued`; ❌ → `skipped` |
 | `failed` | `queued`, `skipped` | человек |
 | `skipped` | `queued` | человек |
@@ -261,6 +263,18 @@ JT сам проверяет повторы: по нормализованном
 активный пользователь). Задачи `collect`, `score` и `cycle` выполняются в процессе бота через те же
 сервисы и общий модуль `scripts/pipeline-tasks.ts`, что и CLI. Одновременно идёт только одна задача,
 а для браузера бот берёт тот же lock, что и CLI. `/stop` останавливает задачу через `AbortController`.
+При старте бот регистрирует меню команд (`setMyCommands`, список `menuCommands` в `bot-commands.ts`);
+`/start` и `/help` начинают с «С чего начать». На home-server бот работает пользовательским юнитом
+systemd (`systemctl --user … job-autopilot-bot`, linger включён) — см. [telegram.md](telegram.md).
+
+**Удалённый браузер** ([telegram.md](telegram.md#удалённый-браузер-)) — для `manual`, где нужен аккаунт
+(Workday, iCIMS…). Кнопка «🖥 Открыть браузер» занимает слот задачи и lock браузера, открывает `applyUrl` в
+новой вкладке агентского Chromium через Playwright MCP (эмуляция телефона) и поднимает страницу на
+`127.0.0.1:REMOTE_BROWSER_PORT` с одноразовым токеном; снаружи она доступна только в tailnet через
+`tailscale serve` (`REMOTE_BROWSER_PUBLIC_URL`) и открывается в Telegram как Mini App (`web_app`). Владелец
+сам регистрируется или входит (снимки раз в 1,5 с, тап, ввод, прокрутка), затем «✅ Аккаунт готов»: сессия
+закрывается, и агент заново заполняет эту вакансию (`fillNext` с `jobId` и `accountReady`) уже залогиненным.
+Аккаунты, пароли и капчу агент по-прежнему не трогает.
 
 **Расписание** — домен `schedules`: таблица `schedules` (одно расписание на задачу, cron и часовой
 пояс, по умолчанию `Europe/Dublin`; новое выключено до `/on`) и история запусков `task_runs`
@@ -371,7 +385,10 @@ LinkedIn Easy Apply и останавливается перед Submit. Поп�
 | `claude-agent.ts` | запуск `claude -p` на DeepSeek с Playwright MCP: аргументы, таймаут, токены и стоимость ([agent-runner.md](agent-runner.md)) |
 | `agent-guard-rules.ts` | чистые правила хука агента `guardDecision`: что запрещено в `fill` и `submit` |
 | `browser-lock.ts` | файловая блокировка agent Chromium `server/data/browser.lock` («браузер занят: …») |
-| `telegram.ts` | клиент Bot API на fetch: `getUpdates`, `sendMessage`, `editMessageText`, `answerCallbackQuery`; повтор по `retry_after` на 429; токена нет в ошибках |
+| `telegram.ts` | клиент Bot API на fetch: `getUpdates`, `sendMessage`, `editMessageText`, `answerCallbackQuery`, `setMyCommands`; кнопки callback, `url` и `web_app`; повтор по `retry_after` на 429; токена нет в ошибках |
+| `mcp-client.ts` | минимальный клиент MCP (streamable HTTP на fetch, без SDK): `initialize`, `tools/call`, JSON и SSE |
+| `remote-browser.ts` | удалённый браузер: вкладка агентского Chromium через Playwright MCP (`browser_run_code_unsafe`), эмуляция телефона, снимок, тап, ввод, прокрутка |
+| `remote-browser-server.ts` | HTTP-страница удалённого браузера на `127.0.0.1`: токен в пути, снимки, действия, таймауты сессии |
 | `cron.ts` | `CronCalendar` на croner: проверка выражения и часового пояса, следующий запуск |
 | `passwords.ts` | хеширование паролей (scrypt) |
 | `client.ts` | раздача собранного Vue-клиента |
@@ -389,7 +406,7 @@ LinkedIn Easy Apply и останавливается перед Submit. Поп�
 | `create-scorer.ts` | оценщик для CLI: `ScoringService` + `TrackerService` + Ollama; ошибки Ollama «сервер/HTTP» → `ScoringModelUnavailableError` |
 | `create-trackers.ts` | `TrackerService` с клиентом JT или без него (`null` — «не настроен») |
 | `create-answers.ts` | банк ответов для CLI: `AnswerService` и поиск активного пользователя по email |
-| `create-bot.ts` | Telegram-бот: jobs, searches, answers, schedules, applications, сборщик и оценщик на каждый запуск, lock браузера, владелец бота |
+| `create-bot.ts` | Telegram-бот: jobs, searches, answers, schedules, applications, сборщик и оценщик на каждый запуск, lock браузера, удалённый браузер (если задан `REMOTE_BROWSER_PUBLIC_URL`), владелец бота |
 | `create-user-administration.ts` | сервис пользователей для `user:create` |
 
 Остальное в `framework`: `core` (Actor, ошибки, роли, часы), `http` (схема ошибки), `generator`
@@ -469,6 +486,8 @@ JT — отдельное приложение (свой репозиторий,
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | пусто | бот job-autopilot ([telegram.md](telegram.md)); без них `npm run bot` не стартует; бот отвечает только этому чату |
 | `BOT_USER` | пусто | email владельца, от имени которого работает бот; пусто — единственный активный пользователь |
 | `SCHEDULE_TIMEZONE` | `Europe/Dublin` | часовой пояс новых расписаний |
+| `REMOTE_BROWSER_PUBLIC_URL` | пусто | адрес удалённого браузера в tailnet (`https://home-server.tail0147a9.ts.net:8444`); пусто — кнопка «🖥 Открыть браузер» выключена |
+| `REMOTE_BROWSER_PORT` | `3420` | локальный порт страницы удалённого браузера (только `127.0.0.1`) |
 | `BOT_SCHEDULED_REPORT` | `changes` | отчёт после планового запуска: `changes` — при новых queued или ошибках, `always` — всегда |
 
 **Ollama и модели.** Ollama работает системным сервисом (`systemctl status ollama`) на `OLLAMA_URL`,
@@ -483,7 +502,7 @@ JT — отдельное приложение (свой репозиторий,
 | 1. Сбор (LinkedIn) | ✅ работает; нет удобного заведения поисков из терминала и второго источника |
 | 2. Отбор (qwen по профилю JT) + передача в JT | ✅ код и тесты готовы, `npm run cycle` объединяет этапы 1–2; проверено на 17 живых вакансиях (выбрана `qwen3.5:4b`, порог 50); ⏳ проверка на ~50 |
 | 3. Подача по одной вакансии | ✅ код и тесты на фейках: `npm run apply`, DeepSeek + Playwright MCP, «стоп перед Submit», отправка после ✅, отметка в JT; ⏳ живая проверка на 5 вакансиях |
-| 4. Telegram и банк ответов | ✅ код и тесты: бот `npm run bot` (запуск, `/stop`, статус, поиски, queued, банк ответов, `/run apply`, ✅/❌, вопросы агента реплаем); ⏳ живая проверка |
+| 4. Telegram и банк ответов | ✅ код и тесты: бот `npm run bot` (запуск, `/stop`, статус, поиски, queued, банк ответов, `/run apply`, ✅/❌, вопросы агента реплаем, меню «/», удалённый браузер для сайтов с аккаунтом); бот запущен на home-server; ⏳ живая проверка удалённого браузера на Workday/iCIMS |
 | 5. Расписание и автоподача | ✅ расписание `collect`/`score`/`cycle`/`apply` в боте (cron, вкл/выкл), лимиты подачи; 📝 автоподача без ✅ |
 | 6. Веб-интерфейс | 📝 по желанию; страница «Вакансии» пока пустая |
 
@@ -495,6 +514,8 @@ JT — отдельное приложение (свой репозиторий,
   один пользователь. Для нескольких пользователей нужен токен на пользователя.
 - **Общий браузер с local-agent.** Расписание теперь в боте (cron в базе, вместо systemd timer);
   открыта блокировка общей вкладки agent Chromium от Telegram-бота local-agent на время прогона.
+  Клиенты Playwright MCP вне job-autopilot lock `server/data/browser.lock` не видят: 2026-11-08 в браузере
+  агента появилась чужая вкладка с отправленной заявкой greenhouse.io, источник не найден.
 - Нужен ли второй источник сбора кроме LinkedIn.
 
 ## 9. Глоссарий

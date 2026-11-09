@@ -93,7 +93,7 @@ LinkedIn весит 10–50k токенов, и на таком железе м�
 | `cycle` | `server/scripts/cycle.ts` | `npm run cycle`: сбор → отбор → Job-Tracker одной командой — [guide](docs/guide.md#сбор-оценка-и-отправка-одной-командой--npm-run-cycle) | готов |
 | Домены `applications`, `answers` | `server/src/…` | попытки подачи (Easy Apply и внешние формы), вопросы агента, банк ответов — [docs/applications.md](docs/applications.md) | код готов; ⏳ приёмка с реальной отправкой |
 | Запуск агента | `server/plugins/claude-agent.ts`, `server/scripts/agent-guard.ts` | DeepSeek с MCP, хук «не отправлять», разбор JSON, таймауты — [docs/agent-runner.md](docs/agent-runner.md) | готов |
-| Telegram-бот | `server/scripts/bot*.ts`, `server/plugins/telegram.ts` | `/run`, `/status`, поиски, отчёты, вопросы, кнопки ✅/❌ — [docs/telegram.md](docs/telegram.md) | готов; запущен вручную, не под systemd |
+| Telegram-бот | `server/scripts/bot*.ts`, `server/plugins/telegram.ts` | `/run` и меню «/», `/status`, поиски, отчёты, вопросы, кнопки ✅/❌, удалённый браузер для сайтов с аккаунтом — [docs/telegram.md](docs/telegram.md) | готов; работает как `systemctl --user` юнит (linger) |
 | Расписание | домен `schedules`, бот | cron в базе вместо systemd timer | готов |
 | Клиент | `client/` | вход, регистрация, профиль; дальше вакансии, вопросы, подачи | частично |
 
