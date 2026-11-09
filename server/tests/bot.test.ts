@@ -3,11 +3,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { PrismaClient } from '../generated/prisma/client.js';
-import { acquireBrowserLock } from '../plugins/browser-lock.js';
+import { acquireBrowserLock, BrowserBusyError } from '../plugins/browser-lock.js';
+import type { RemoteBrowserEnd, RemoteBrowserPort } from '../plugins/remote-browser.js';
 import { cronCalendar } from '../plugins/cron.js';
 import { createPrismaClient } from '../plugins/database.js';
 import type { InlineKeyboard, TelegramClient, TelegramUpdate } from '../plugins/telegram.js';
-import { externalMessageMax, fieldValueMax, manualMessage, menuCommands, parseCallback, parseCommand, parseOptions, readyMessage, submittedMessage } from '../scripts/bot-commands.js';
+import { browserLabel, browserOpenedMessage, externalMessageMax, fieldValueMax, manualMessage, menuCommands, parseCallback, parseCommand, parseOptions, readyMessage, submittedMessage } from '../scripts/bot-commands.js';
 import { Scheduler, shouldReport, TelegramBot } from '../scripts/bot-runtime.js';
 import type { BotOwner, BotServices, TaskOutcome, Timer } from '../scripts/bot-runtime.js';
 import type { PipelineOutput } from '../scripts/pipeline-tasks.js';
@@ -80,6 +81,9 @@ describe('bot commands', () => {
     expect(parseCallback('a:ok:app-1')).toEqual({ kind: 'application', action: 'submit', id: 'app-1' });
     expect(parseCallback('a:no:app-1')).toEqual({ kind: 'application', action: 'reject', id: 'app-1' });
     expect(parseCallback('a:me:app-1')).toEqual({ kind: 'application', action: 'appliedByHand', id: 'app-1' });
+    expect(parseCallback('a:br:app-1')).toEqual({ kind: 'application', action: 'openBrowser', id: 'app-1' });
+    expect(parseCallback('a:acc:app-1')).toEqual({ kind: 'application', action: 'accountReady', id: 'app-1' });
+    expect(parseCallback('a:bx:app-1')).toEqual({ kind: 'application', action: 'closeBrowser', id: 'app-1' });
     expect(parseCallback('a:del:app-1')).toBeNull();
     expect(parseCallback('x')).toBeNull();
     expect(parseCallback(undefined)).toBeNull();
@@ -137,12 +141,33 @@ describe('apply messages', () => {
     expect(text).toContain('🖐 <b>Подать вручную</b>: Node &lt;Dev&gt; — Acme &amp; Co');
     expect(text).toContain('Причина: подать вручную: Workday &lt;аккаунт&gt;');
     expect(text).toContain('Ссылка: <a href="https://acme.wd3.myworkdayjobs.com/en/job/1">acme.wd3.myworkdayjobs.com</a>');
-    expect(keyboard).toEqual([[{ text: '✅ подал сам', data: 'a:me:app-1' }, { text: '❌ не подаю', data: 'a:no:app-1' }]]);
+    expect(keyboard).toEqual([
+      [{ text: '✅ подал сам', data: 'a:me:app-1' }, { text: '❌ не подаю', data: 'a:no:app-1' }],
+      [{ text: '🖥 Открыть браузер', data: 'a:br:app-1' }],
+    ]);
     const uuid = '0f8b6c1e-3a7d-4c2b-9e51-7a2d4c6b8e90';
-    for (const button of manualMessage(attemptView({ id: uuid, status: 'manual' })).keyboard[0]!) {
-      expect(Buffer.byteLength(button.data)).toBeLessThanOrEqual(64);
+    for (const button of manualMessage(attemptView({ id: uuid, status: 'manual' })).keyboard.flat()) {
+      expect(Buffer.byteLength(button.data!)).toBeLessThanOrEqual(64);
       expect(parseCallback(button.data)).toMatchObject({ kind: 'application', id: uuid });
     }
+  });
+});
+
+describe('remote browser messages', () => {
+  it('opens as a Mini App over https, as a link otherwise; the buttons fit 64 bytes', () => {
+    const uuid = '0f8b6c1e-3a7d-4c2b-9e51-7a2d4c6b8e90';
+    const { text, keyboard } = browserOpenedMessage(uuid, 'https://acme.wd3.myworkdayjobs.com/en/job/1', 'https://rb.example.test:8444/s/tok', 30);
+    expect(text).toBe('🖥 Браузер открыт: acme.wd3.myworkdayjobs.com. Зарегистрируйся / войди, затем «✅ Аккаунт готов». Сессия закроется через 30 мин без действий.');
+    expect(keyboard).toEqual([
+      [{ text: '🖥 Открыть', webApp: 'https://rb.example.test:8444/s/tok' }],
+      [{ text: '✅ Аккаунт готов', data: `a:acc:${uuid}` }, { text: '✖️ Закрыть', data: `a:bx:${uuid}` }],
+    ]);
+    for (const button of keyboard.flat().filter((item) => item.data)) {
+      expect(Buffer.byteLength(button.data!)).toBeLessThanOrEqual(64);
+      expect(parseCallback(button.data)).toMatchObject({ kind: 'application', id: uuid });
+    }
+    expect(browserOpenedMessage('a', 'https://x.example/', 'http://127.0.0.1:3420/s/tok', 30).keyboard[0]).toEqual([{ text: '🖥 Открыть', url: 'http://127.0.0.1:3420/s/tok' }]);
+    expect(browserLabel('https://acme.wd3.myworkdayjobs.com/en/job/1')).toBe('браузер (acme.wd3.myworkdayjobs.com)');
   });
 });
 
@@ -208,6 +233,24 @@ function gate() {
   return { promise, open };
 }
 
+/** The remote browser without a browser: what was opened and closed, and the expiry fired by hand. */
+function fakeRemoteBrowser() {
+  const remote = {
+    events: [] as string[],
+    failWith: null as Error | null,
+    onExpire: null as ((reason: RemoteBrowserEnd) => void) | null,
+    port: {
+      async open(url, onExpire) {
+        if (remote.failWith) throw remote.failWith;
+        remote.events.push(`open ${url}`);
+        remote.onExpire = onExpire;
+        return { link: 'https://rb.example.test:8444/s/token', close: async () => { remote.events.push('close'); } };
+      },
+    } as RemoteBrowserPort,
+  };
+  return remote;
+}
+
 const chatId = 4242;
 const quiet: PipelineOutput = { line: () => {}, warn: () => {} };
 
@@ -234,6 +277,7 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
   let applyAgent: FakeAgent;
   let submitGate: ReturnType<typeof gate> | null;
   let applicationCalls: string[];
+  let remote: ReturnType<typeof fakeRemoteBrowser>;
 
   beforeAll(async () => {
     testDatabase = createTestDatabase();
@@ -277,6 +321,7 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     const counts = { found: 3, scored: 0, rejected: 5, queued: 2, applying: 0, applied: 0, needs_input: 0, failed: 0, skipped: 1, manual: 1 } as Record<JobStatus, number>;
     submitGate = null;
     applicationCalls = [];
+    remote = fakeRemoteBrowser();
     // The real service, with the calls the bot makes written down and ✅ held open by `submitGate`.
     const real: ApplicationApi = applier.applications;
     const applications: BotServices['applications'] = {
@@ -331,6 +376,7 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
       },
       schedules,
       applications,
+      remoteBrowser: remote.port,
       pipeline: {
         get trackerConfigured() { return trackerConfigured; },
         lockBrowser: (task) => acquireBrowserLock({ task: `bot:${task}`, path: lockPath }),
@@ -503,24 +549,24 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     const on = list.keyboard![0]![0]!;
     expect(on.text).toMatch(/включить score/);
 
-    await bot.handleUpdate({ update_id: 500, callback_query: { id: 'q1', data: on.data, message: { message_id: 7, chat: { id: chatId } } } });
+    await bot.handleUpdate({ update_id: 500, callback_query: { id: 'q1', data: on.data!, message: { message_id: 7, chat: { id: chatId } } } });
     expect(telegram.sent.at(-2)).toMatchObject({ method: 'editMessageText', text: expect.stringMatching(/score.*вкл/) });
     expect(telegram.sent.at(-1)).toEqual({ method: 'answerCallbackQuery', callbackText: 'Включено' });
     expect(bot.scheduler.nextAt).toEqual(new Date('2026-11-05T09:00:00Z'));
 
     const remove = telegram.sent.at(-2)!.keyboard![0]![1]!;
-    await bot.handleUpdate({ update_id: 501, callback_query: { id: 'q2', data: remove.data, message: { message_id: 7, chat: { id: chatId } } } });
+    await bot.handleUpdate({ update_id: 501, callback_query: { id: 'q2', data: remove.data!, message: { message_id: 7, chat: { id: chatId } } } });
     expect(telegram.sent.at(-2)).toMatchObject({ method: 'editMessageText', text: expect.stringMatching(/Расписаний нет/) });
     expect(bot.scheduler.nextAt).toBeNull();
 
     // A button pressed twice: the schedule is gone, the bot says so in the button answer.
-    await bot.handleUpdate({ update_id: 502, callback_query: { id: 'q3', data: remove.data, message: { message_id: 7, chat: { id: chatId } } } });
+    await bot.handleUpdate({ update_id: 502, callback_query: { id: 'q3', data: remove.data!, message: { message_id: 7, chat: { id: chatId } } } });
     expect(telegram.sent.at(-1)).toEqual({ method: 'answerCallbackQuery', callbackText: 'Расписание не найдено.' });
 
     await say('/searches');
     expect(telegram.sent.at(-1)!.text).toContain('✅ linkedin «node.js» (Ireland) easy apply −java');
     const off = telegram.sent.at(-1)!.keyboard![0]![0]!;
-    await bot.handleUpdate({ update_id: 503, callback_query: { id: 'q4', data: off.data, message: { message_id: 8, chat: { id: chatId } } } });
+    await bot.handleUpdate({ update_id: 503, callback_query: { id: 'q4', data: off.data!, message: { message_id: 8, chat: { id: chatId } } } });
     expect(searches[0]!.enabled).toBe(false);
     expect(telegram.sent.at(-1)).toEqual({ method: 'answerCallbackQuery', callbackText: 'Поиск выключен' });
   });
@@ -538,7 +584,7 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     expect(list.text).toContain('2. ✅ linkedin «typescript» (Remote)');
     const remove = list.keyboard![1]![1]!;
     expect(remove.text).toBe('🗑 2. удалить');
-    await bot.handleUpdate({ update_id: 600, callback_query: { id: 'q5', data: remove.data, message: { message_id: 9, chat: { id: chatId } } } });
+    await bot.handleUpdate({ update_id: 600, callback_query: { id: 'q5', data: remove.data!, message: { message_id: 9, chat: { id: chatId } } } });
     expect(searches.map((search) => search.keywords)).toEqual(['node.js']);
     expect(telegram.sent.at(-2)).toMatchObject({ method: 'editMessageText', text: expect.not.stringContaining('typescript') });
     expect(telegram.sent.at(-1)).toEqual({ method: 'answerCallbackQuery', callbackText: 'Поиск удалён' });
@@ -559,7 +605,7 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     const texts = telegram.texts();
     expect(texts[1]).toMatch(/^✅ <b>apply<\/b> вручную/);
     expect(texts[1]).toContain('ready: Job jt-a — Acme');
-    const forms = telegram.sent.filter((item) => item.keyboard?.[0]?.[0]?.data.startsWith('a:ok:'));
+    const forms = telegram.sent.filter((item) => item.keyboard?.[0]?.[0]?.data?.startsWith('a:ok:'));
     expect(forms).toHaveLength(2);
     expect(forms[0]!.text).toContain('• Email: owner@example.test');
     const questionIndex = telegram.sent.findIndex((item) => item.text?.startsWith('❓'));
@@ -569,14 +615,14 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     const [, noB] = forms[1]!.keyboard![0]!;
 
     applyAgent.steps.push(agentAnswer('submitted'));
-    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-ok', data: okA!.data, message: { message_id: 50, chat: { id: chatId } } } });
+    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-ok', data: okA!.data!, message: { message_id: 50, chat: { id: chatId } } } });
     await bot.settled();
     expect(applyAgent.requests.at(-1)).toMatchObject({ mode: 'submit', resumeSessionId: 'session-1' });
     expect(applyTracker.marks.map((mark) => mark.jobId)).toEqual(['jt-a']);
     expect(telegram.texts().at(-1)).toMatch(/Job jt-a<\/b> — Acme: отправлено и отмечено в Job-Tracker/);
     expect((await database.job.findFirstOrThrow({ where: { trackerId: 'jt-a' } })).status).toBe('applied');
 
-    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-no', data: noB!.data, message: { message_id: 51, chat: { id: chatId } } } });
+    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-no', data: noB!.data!, message: { message_id: 51, chat: { id: chatId } } } });
     expect(telegram.sent.find((item) => item.method === 'editMessageText' && item.text?.startsWith('❌'))).toBeTruthy();
     expect(await database.job.findFirstOrThrow({ where: { trackerId: 'jt-b' } })).toMatchObject({ status: 'skipped', why: 'отклонено вручную' });
 
@@ -637,7 +683,7 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     // /pending sends the form and both manual jobs again, with their buttons.
     telegram.sent.length = 0;
     await say('/pending');
-    expect(telegram.sent.map((item) => item.keyboard?.[0]?.map((button) => button.data.slice(0, 4)))).toEqual([
+    expect(telegram.sent.map((item) => item.keyboard?.[0]?.map((button) => button.data?.slice(0, 4)))).toEqual([
       ['a:ok', 'a:no'], ['a:me', 'a:no'], ['a:me', 'a:no'],
     ]);
 
@@ -645,7 +691,7 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     submitGate = gate();
     applyAgent.steps.push(agentAnswer('submitted', { kind: 'external', applyUrl: greenhouse, summary: 'страница «Thank you»' }));
     const [ok] = form.keyboard![0]!;
-    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-x', data: ok!.data, message: { message_id: 70, chat: { id: chatId } } } });
+    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-x', data: ok!.data!, message: { message_id: 70, chat: { id: chatId } } } });
     expect(telegram.sent.at(-2)).toEqual({ method: 'answerCallbackQuery', callbackText: 'Заполняю заново и отправляю…' });
     expect(telegram.sent.at(-1)).toMatchObject({ method: 'editMessageText', text: expect.stringMatching(/^⏳ Заполняю заново и отправляю: Job jt-x — Acme/) });
     expect(telegram.sent.at(-1)!.keyboard).toBeUndefined();
@@ -661,7 +707,7 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
 
     // «✅ подал сам» on the first manual job; «❌ не подаю» on the second.
     const [appliedByHand] = manual[0]!.keyboard![0]!;
-    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-me', data: appliedByHand!.data, message: { message_id: 71, chat: { id: chatId } } } });
+    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-me', data: appliedByHand!.data!, message: { message_id: 71, chat: { id: chatId } } } });
     expect(applicationCalls.at(-1)).toMatch(/^manual /);
     expect(telegram.sent.at(-3)).toEqual({ method: 'editMessageText', chatId, text: '🖐 Подано вручную: Job jt-m — Acme' });
     expect(telegram.sent.at(-2)).toEqual({ method: 'answerCallbackQuery', callbackText: 'Отмечено' });
@@ -670,17 +716,111 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     expect((await database.job.findFirstOrThrow({ where: { trackerId: 'jt-m' } })).status).toBe('applied');
 
     // Pressed again: the attempt is not manual any more, the button says so.
-    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-me2', data: appliedByHand!.data, message: { message_id: 71, chat: { id: chatId } } } });
+    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-me2', data: appliedByHand!.data!, message: { message_id: 71, chat: { id: chatId } } } });
     expect(telegram.sent.at(-1)).toMatchObject({ method: 'answerCallbackQuery', callbackText: expect.stringMatching(/только для попытки manual/) });
 
     const [, giveUp] = manual[1]!.keyboard![0]!;
-    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-no', data: giveUp!.data, message: { message_id: 72, chat: { id: chatId } } } });
+    await bot.handleUpdate({ update_id: ++updateId, callback_query: { id: 'cb-no', data: giveUp!.data!, message: { message_id: 72, chat: { id: chatId } } } });
     expect(applicationCalls.at(-1)).toMatch(/^reject /);
     expect(telegram.sent.at(-2)).toMatchObject({ method: 'editMessageText', text: '❌ Отклонено: Job jt-n — Acme' });
     expect(await database.job.findFirstOrThrow({ where: { trackerId: 'jt-n' } })).toMatchObject({ status: 'skipped', why: 'отклонено вручную' });
 
     await say('/pending');
     expect(telegram.texts().at(-1)).toBe('Ничего не ждёт ✅ или подачи вручную, открытых вопросов нет.');
+  });
+
+  it('remote browser: busy, open, /status, «Аккаунт готов» → the agent again on the form, close, timeout, /stop', async () => {
+    const workday = (n: number) => `https://acme.wd3.myworkdayjobs.com/job/${n}`;
+    const row = (id: string, number: number) => ({ id, url: linkedinUrl(number), title: `Job ${id}`, company: 'Acme', source: 'linkedin' });
+    applyTracker.toApply = [row('jt-w', 4000000301), row('jt-v', 4000000302)];
+    applyAgent.steps.push(
+      agentAnswer('manual', { kind: 'external', applyUrl: workday(301), summary: 'Workday: нужен аккаунт' }),
+      agentAnswer('manual', { kind: 'external', applyUrl: workday(302), summary: 'Workday: нужен аккаунт' }),
+    );
+    await say('/run apply');
+    await bot.settled();
+    const manual = telegram.sent.filter((item) => item.text?.startsWith('🖐'));
+    expect(manual).toHaveLength(2);
+    const browserButton = (index: number) => manual[index]!.keyboard![1]![0]!;
+    expect(browserButton(0)).toMatchObject({ text: '🖥 Открыть браузер', data: expect.stringMatching(/^a:br:/) });
+    const press = (id: string, data: string) => bot.handleUpdate({ update_id: ++updateId, callback_query: { id, data, message: { message_id: 90, chat: { id: chatId } } } });
+    const lockFree = () => { try { acquireBrowserLock({ task: 'probe', path: lockPath }).release(); return true; } catch (error) { if (error instanceof BrowserBusyError) return false; throw error; } };
+
+    // A running task: «занято», nothing opens.
+    collectGate = gate();
+    await say('/run collect');
+    await press('cb-busy', browserButton(0).data!);
+    expect(telegram.sent.at(-1)).toMatchObject({ method: 'answerCallbackQuery', callbackText: expect.stringMatching(/^занято: collect/) });
+    collectGate.open();
+    await bot.settled();
+    expect(remote.events).toEqual([]);
+
+    // Open: the form of the manual attempt, the Mini App link and the two buttons; the runner and the lock are taken.
+    await press('cb-open', browserButton(0).data!);
+    expect(remote.events).toEqual([`open ${workday(301)}`]);
+    const opened = telegram.sent.at(-1)!;
+    expect(opened.text).toBe('🖥 Браузер открыт: acme.wd3.myworkdayjobs.com. Зарегистрируйся / войди, затем «✅ Аккаунт готов». Сессия закроется через 30 мин без действий.');
+    expect(opened.keyboard![0]).toEqual([{ text: '🖥 Открыть', webApp: 'https://rb.example.test:8444/s/token' }]);
+    const [ready] = opened.keyboard![1]!;
+    expect(ready!.data).toMatch(/^a:acc:/);
+    expect(lockFree()).toBe(false);
+    await say('/status');
+    expect(telegram.texts().at(-1)).toContain('<b>Сейчас</b>: браузер (acme.wd3.myworkdayjobs.com), запущено 0 мин назад');
+    await say('/run collect');
+    expect(telegram.texts().at(-1)).toContain('занято: браузер (acme.wd3.myworkdayjobs.com)');
+    await press('cb-open2', browserButton(1).data!);
+    expect(telegram.sent.at(-1)).toMatchObject({ method: 'answerCallbackQuery', callbackText: expect.stringMatching(/^Браузер уже открыт/) });
+
+    // «✅ Аккаунт готов»: the session closes, the agent fills this job again starting on the signed-in form.
+    applyAgent.steps.push(agentAnswer('ready_to_submit', { kind: 'external', applyUrl: workday(301), filled: [{ field: 'Email', value: 'owner@example.test' }] }));
+    await press('cb-ready', ready!.data!);
+    await bot.settled();
+    expect(remote.events).toEqual([`open ${workday(301)}`, 'close']);
+    expect(telegram.texts()).toContain('Аккаунт готов — запускаю агента на эту вакансию: Job jt-w — Acme…');
+    expect(applyAgent.requests.at(-1)).toMatchObject({ mode: 'fill', startUrl: workday(301) });
+    expect(applyAgent.requests.at(-1)!.prompt).toContain(`where the owner has just signed in: ${workday(301)}`);
+    expect(applyAgent.requests.at(-1)!.systemPrompt).toContain('The owner has just created an account');
+    expect(telegram.texts().some((text) => text.startsWith('<b>apply</b> после «Аккаунт готов»'))).toBe(true);
+    expect(telegram.sent.at(-1)!.text).toMatch(/^🌐 <b>Внешняя форма заполнена, ждёт ✅<\/b>: Job jt-w/);
+    expect(lockFree()).toBe(true);
+    expect(telegram.texts()).not.toContain('Браузер закрыт.');
+
+    // «✖️ Закрыть».
+    await press('cb-open3', browserButton(1).data!);
+    const second = telegram.sent.at(-1)!.keyboard![1]!;
+    await press('cb-close', second[1]!.data!);
+    expect(remote.events.at(-1)).toBe('close');
+    expect(telegram.texts().at(-1)).toBe('Браузер закрыт.');
+    expect(lockFree()).toBe(true);
+    await press('cb-close2', second[1]!.data!);
+    expect(telegram.sent.at(-1)).toMatchObject({ method: 'answerCallbackQuery', callbackText: 'Браузер уже закрыт.' });
+
+    // 30 minutes without actions.
+    await press('cb-open4', browserButton(1).data!);
+    remote.onExpire!('idle');
+    await bot.settled();
+    expect(remote.events.at(-1)).toBe('close');
+    expect(telegram.texts().at(-1)).toBe('Браузер закрыт (30 мин без действий).');
+    expect(lockFree()).toBe(true);
+
+    // /stop closes it too, and the runner is free again.
+    await press('cb-open5', browserButton(1).data!);
+    await say('/stop');
+    expect(remote.events.at(-1)).toBe('close');
+    expect(telegram.texts().at(-1)).toBe('Браузер закрыт.');
+    await say('/status');
+    expect(telegram.texts().at(-1)).toContain('<b>Сейчас</b>: ничего не выполняется');
+
+    // It does not open: the error is said, nothing stays taken.
+    remote.failWith = new Error('Playwright MCP initialize: недоступен');
+    await press('cb-open6', browserButton(1).data!);
+    expect(telegram.texts().at(-1)).toBe('Браузер не открылся: Playwright MCP initialize: недоступен');
+    expect(lockFree()).toBe(true);
+    expect(bot.runner.busyText()).toBeNull();
+
+    // An attempt that is not manual any more.
+    await press('cb-open7', browserButton(0).data!);
+    expect(telegram.sent.at(-1)).toMatchObject({ method: 'answerCallbackQuery', callbackText: 'Вакансия уже не ждёт подачи вручную.' });
   });
 
   it('shows status, queued and the answer bank, and adds an answer from Telegram', async () => {

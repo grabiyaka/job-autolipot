@@ -97,6 +97,9 @@ export class ApplicationService implements ApplicationApi {
     const agent = this.requireAgent();
     const cvPath = this.settings.cvPath;
     if (!cvPath) throw new ApplicationError('APPLY_CV_MISSING', 'Не задано резюме для загрузки: APPLY_CV_FILE в .env (файл из /srv/agent-files).', 503);
+    if (options.accountReady && !options.jobId) {
+      throw new ApplicationError('INVALID_QUERY', '«Аккаунт готов» — только для одной вакансии (jobId).', 400);
+    }
     if (!this.tracker.configured) {
       throw new ApplicationError('TRACKER_NOT_CONFIGURED', 'Job-Tracker не настроен: задайте JOB_TRACKER_URL и JOB_TRACKER_TOKEN — профиль и To Apply берутся оттуда.', 503);
     }
@@ -126,7 +129,9 @@ export class ApplicationService implements ApplicationApi {
         if (!withinBudget(await this.spentToday(ownerId), this.settings.maxMicrosPerDay)) { stopped = 'budget'; break; }
         profile ??= await this.tracker.profile(ownerId);
         runs++;
-        const attempt = await this.fillOne(ownerId, agent, job, profile.markdown, cvPath, options.signal);
+        // «Аккаунт готов»: the agent starts on the form of the last `manual` attempt, where the owner has signed in.
+        const signedInForm = options.accountReady ? await this.manualForm(ownerId, job.id) : null;
+        const attempt = await this.fillOne(ownerId, agent, job, profile.markdown, cvPath, options.signal, signedInForm);
         lines.push(attempt.line);
         if (attempt.ready) ready.push(attempt.ready);
         if (attempt.manual) manual.push(attempt.manual);
@@ -153,9 +158,16 @@ export class ApplicationService implements ApplicationApi {
     return view(await this.owned(ownerId, attempt.id));
   }
 
-  /** One agent run for one job, recorded as an attempt. */
+  /** The https form page of the job's latest `manual` attempt (where the owner made the account), or null. */
+  private async manualForm(ownerId: string, jobId: string): Promise<string | null> {
+    const attempt = (await this.applications.list(ownerId, ['manual'])).find((item) => item.jobId === jobId);
+    return httpsPageUrl(attempt?.applyUrl);
+  }
+
+  /** One agent run for one job, recorded as an attempt; `signedInForm` — the form the owner has just signed in on. */
   private async fillOne(
     ownerId: string, agent: ApplyAgent, job: PipelineJob, profileMarkdown: string, cvPath: string, signal: AbortSignal | undefined,
+    signedInForm: string | null = null,
   ): Promise<{
     line: FillLine; ready: ApplicationView | null; manual: ApplicationView | null; submitted: SubmittedView | null; questions: QuestionView[]; aborted: boolean;
   }> {
@@ -166,11 +178,13 @@ export class ApplicationService implements ApplicationApi {
       jobId: job.id, title: job.title, company: job.company, applicationId: attempt.id, status, note, costMicros,
     });
 
-    const startUrl = applyStartUrl(job.url)!;
+    const startUrl = signedInForm ?? applyStartUrl(job.url)!;
     // APPLY_AUTO_SUBMIT: the run sends the form itself; the guard lets one send click through (submit_fresh).
     const auto = this.settings.autoSubmit;
     const draft = await this.applications.latestDraft(ownerId, job.id);
-    const { systemPrompt, prompt } = buildApplyPrompt(profileMarkdown, await this.answers.listForUser(ownerId), job, cvPath, auto ? 'auto' : 'fill', draft);
+    const { systemPrompt, prompt } = buildApplyPrompt(
+      profileMarkdown, await this.answers.listForUser(ownerId), job, cvPath, auto ? 'auto' : 'fill', draft, signedInForm,
+    );
     let result: ApplyAgentResult;
     try {
       result = await agent.run({

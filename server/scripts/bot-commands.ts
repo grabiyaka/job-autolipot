@@ -179,13 +179,18 @@ export type BotCallback =
   | Readonly<{ kind: 'search'; action: 'on' | 'off' | 'delete'; id: string }>
   | Readonly<{ kind: 'application'; action: ApplicationAction; id: string }>;
 
-/** ✅ send (ready), ❌ give up (ready or manual), «✅ подал сам» (manual). */
-export type ApplicationAction = 'submit' | 'reject' | 'appliedByHand';
-const applicationActions: Record<string, ApplicationAction> = { ok: 'submit', no: 'reject', me: 'appliedByHand' };
+/**
+ * ✅ send (ready), ❌ give up (ready or manual), «✅ подал сам» (manual); the remote browser of a manual job:
+ * «🖥 Открыть браузер», «✅ Аккаунт готов» (close it and run the agent again), «✖️ Закрыть».
+ */
+export type ApplicationAction = 'submit' | 'reject' | 'appliedByHand' | 'openBrowser' | 'accountReady' | 'closeBrowser';
+const applicationActions: Record<string, ApplicationAction> = {
+  ok: 'submit', no: 'reject', me: 'appliedByHand', br: 'openBrowser', acc: 'accountReady', bx: 'closeBrowser',
+};
 
 /** Callback data must fit 64 bytes: a short prefix and a UUID. */
 export function parseCallback(data: string | undefined): BotCallback | null {
-  const application = data?.match(/^a:(ok|no|me):([\w-]{1,48})$/);
+  const application = data?.match(/^a:(ok|no|me|br|acc|bx):([\w-]{1,48})$/);
   if (application) return { kind: 'application', action: applicationActions[application[1]!]!, id: application[2]! };
   const match = data?.match(/^([sq]):(on|off|del):([\w-]{1,48})$/);
   if (!match) return null;
@@ -233,7 +238,8 @@ export const helpText = [
   '/collect — только сбор · /score — только оценка',
   '/apply limit=N — заполнить формы из To Apply (LinkedIn Easy Apply и внешние сайты: Greenhouse, Lever…); перед отправкой агент останавливается',
   '  ✅ на внешней форме — агент заполнит её заново и отправит (пара минут); ❌ — отказаться',
-  '  🖐 «подать вручную» (Workday, аккаунт, капча) — ссылка; подали сами — «✅ подал сам», отмечу в Job-Tracker',
+  '  🖐 «подать вручную» (Workday, аккаунт, капча) — ссылка; подали сами — «✅ подал сам», отмечу в Job-Tracker;',
+  '  нужен аккаунт — «🖥 Открыть браузер»: зарегистрируйтесь в браузере агента, «✅ Аккаунт готов» — агент продолжит',
   `/run ${taskList} [флаги] — то же самое длинной формой`,
   '/stop — остановить текущую задачу (дописав текущую страницу или вакансию)',
   '',
@@ -520,8 +526,33 @@ export function manualMessage(application: ApplicationView): { text: string; key
       `Ссылка: ${linkTo(application.applyUrl ?? application.url)}`,
       '',
       'Подали сами — «✅ подал сам», отмечу в Job-Tracker; не будете — «❌ не подаю».',
+      'Нужен аккаунт — «🖥 Открыть браузер»: зарегистрируйтесь в браузере агента, и он продолжит сам.',
     ].join('\n'),
-    keyboard: [[{ text: '✅ подал сам', data: `a:me:${application.id}` }, { text: '❌ не подаю', data: `a:no:${application.id}` }]],
+    keyboard: [
+      [{ text: '✅ подал сам', data: `a:me:${application.id}` }, { text: '❌ не подаю', data: `a:no:${application.id}` }],
+      [{ text: '🖥 Открыть браузер', data: `a:br:${application.id}` }],
+    ],
+  };
+}
+
+/** The host of a URL for messages and /status; the address itself when it does not parse. */
+export function urlHost(url: string): string {
+  try { return new URL(url).host || url; } catch { return url; }
+}
+
+/** What /status and «занято» show while the remote browser is open. */
+export const browserLabel = (url: string): string => `браузер (${urlHost(url)})`;
+
+/**
+ * The remote browser is open: the page as a Telegram Mini App (an https link; a plain link otherwise),
+ * «✅ Аккаунт готов» and «✖️ Закрыть».
+ */
+export function browserOpenedMessage(applicationId: string, applyUrl: string, link: string, idleMinutes: number): { text: string; keyboard: InlineKeyboard } {
+  const open = link.startsWith('https://') ? { text: '🖥 Открыть', webApp: link } : { text: '🖥 Открыть', url: link };
+  return {
+    text: `🖥 Браузер открыт: ${escapeHtml(urlHost(applyUrl))}. Зарегистрируйся / войди, затем «✅ Аккаунт готов». `
+      + `Сессия закроется через ${idleMinutes} мин без действий.`,
+    keyboard: [[open], [{ text: '✅ Аккаунт готов', data: `a:acc:${applicationId}` }, { text: '✖️ Закрыть', data: `a:bx:${applicationId}` }]],
   };
 }
 

@@ -16,7 +16,8 @@ import { createCollector } from './create-collector.js';
 import { createScorer } from './create-scorer.js';
 import { createSearchService } from './create-searches.js';
 import type { ClaudeAgentConfig } from '../../plugins/claude-agent.js';
-import type { ApplyEnvSettings } from '../../plugins/environment.js';
+import type { ApplyEnvSettings, RemoteBrowserEnvSettings } from '../../plugins/environment.js';
+import { remoteBrowser } from '../../plugins/remote-browser.js';
 import { createJobTrackerClient } from '../../plugins/job-tracker.js';
 import { applyBrowserLock, applySettings, claudeApplyAgent, createApplicationService } from './create-applications.js';
 
@@ -31,6 +32,8 @@ export type BotSettings = Readonly<{
   /** Read on the first agent run, so the bot starts without DeepSeek prices; apply then reports the error. */
   agentConfig: () => ClaudeAgentConfig;
   apply: ApplyEnvSettings;
+  /** The remote browser for `manual` jobs (REMOTE_BROWSER_*); null — the button answers that it is not set up. */
+  remoteBrowser: RemoteBrowserEnvSettings | null;
 }>;
 
 export type BotOwner = Actor & Readonly<{ email: string }>;
@@ -59,6 +62,7 @@ export function createBot(settings: BotSettings) {
     searches: createSearchService(prisma, jobs, clock, { log: settings.log, browserSocket: settings.browserSocket }),
     answers,
     applications,
+    remoteBrowser: settings.remoteBrowser ? remoteBrowser(settings.remoteBrowser) : null,
     schedules: new ScheduleService(new ScheduleRepository(prisma), cronCalendar, clock, { timezone: settings.timezone }),
     pipeline: {
       trackerConfigured: settings.tracker !== null,

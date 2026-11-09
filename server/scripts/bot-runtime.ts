@@ -1,4 +1,5 @@
 import type { BrowserLock } from '../plugins/browser-lock.js';
+import type { RemoteBrowserEnd, RemoteBrowserPort, RemoteBrowserSession } from '../plugins/remote-browser.js';
 import { BrowserBusyError } from '../plugins/browser-lock.js';
 import { escapeHtml } from '../plugins/telegram.js';
 import type { TelegramClient, TelegramUpdate } from '../plugins/telegram.js';
@@ -13,7 +14,7 @@ import type { ScoringLine } from '../src/scoring/ScoringService.js';
 import type { SearchService } from '../src/searches/SearchService.js';
 import type { Logger } from '../src/searches/SearchTypes.js';
 import {
-  answersText, applyReportLines, helpText, manualMessage, menuCommands, minutesAgo, progressText, questionMessage, readyMessage, submitLabel, submitResultText, submittedMessage, parseCallback, parseCommand, queuedText, scheduleLine, scheduleSaved, schedulesMessage, searchesMessage,
+  answersText, applyReportLines, browserLabel, browserOpenedMessage, helpText, manualMessage, menuCommands, minutesAgo, progressText, questionMessage, readyMessage, submitLabel, submitResultText, submittedMessage, parseCallback, parseCommand, queuedText, scheduleLine, scheduleSaved, schedulesMessage, searchesMessage,
   searchLine, statusText,
 } from './bot-commands.js';
 import type { ApplicationAction, BotCommand, TaskProgress } from './bot-commands.js';
@@ -56,6 +57,8 @@ export type BotServices = Readonly<{
   /** Applying: fill runs as the `apply` task, ✅ / ❌ buttons and replies to the agent's questions. */
   applications: Pick<ApplicationApi,
     'fillNext' | 'submit' | 'markManualApplied' | 'reject' | 'answerQuestion' | 'pending' | 'setQuestionMessage' | 'findQuestionByMessage'>;
+  /** The agent's Chromium from the phone for a `manual` job (REMOTE_BROWSER_PUBLIC_URL); null — not set up. */
+  remoteBrowser?: RemoteBrowserPort | null;
 }>;
 
 // ── One task at a time ──
@@ -203,6 +206,16 @@ export class TaskRunner {
     } finally {
       this.current = null;
     }
+  }
+
+  /**
+   * A long exclusive slot that is not a task run (the remote browser): held until `release`. /stop (and
+   * shutdown) abort its signal. Null when something is running.
+   */
+  hold(label: string): Readonly<{ signal: AbortSignal; release(): void }> | null {
+    if (this.current) return null;
+    const current = this.start(label, 'manual');
+    return { signal: current.controller.signal, release: () => { if (this.current === current) this.current = null; } };
   }
 
   /** Whether a task is running now. */
@@ -409,11 +422,27 @@ export type BotSettings = Readonly<{
   staleAfterSeconds?: number;
 }>;
 
+/** How long the remote browser stays open without actions, for the messages. */
+const remoteBrowserIdleMinutes = 30;
+
+type BrowserCloseReason = RemoteBrowserEnd | 'closed' | 'stop' | 'ready' | 'failed';
+
+/** The open remote browser session: one at a time, holding the runner's slot and the browser lock. */
+type OpenBrowser = {
+  applicationId: string;
+  label: string;
+  session: RemoteBrowserSession | null;
+  lock: BrowserLock;
+  release(): void;
+  closing: Promise<void> | null;
+};
+
 export class TelegramBot {
   readonly runner: TaskRunner;
   readonly scheduler: Scheduler;
   private offset = 0;
   private tasks = new Set<Promise<void>>();
+  private browser: OpenBrowser | null = null;
 
   constructor(
     private readonly telegram: TelegramClient,
@@ -515,6 +544,10 @@ export class TelegramBot {
         return this.say(`Запускаю <b>${command.task}</b>. Остановить: /stop`);
       }
       case 'stop': {
+        if (this.browser) {
+          await this.closeBrowser('stop');
+          return;
+        }
         const task = this.runner.stop();
         return this.say(task ? `Останавливаю <b>${task}</b>: дописываю текущую страницу или вакансию…` : 'Сейчас ничего не выполняется.');
       }
@@ -625,6 +658,14 @@ export class TelegramBot {
    */
   private async applicationButton(callbackId: string, messageId: number, action: ApplicationAction, applicationId: string): Promise<void> {
     const { applications } = this.services;
+    if (action === 'openBrowser') return this.openBrowser(callbackId, applicationId);
+    if (action === 'accountReady') return this.accountReady(callbackId, applicationId);
+    if (action === 'closeBrowser') {
+      if (!this.browser) { await this.telegram.answerCallbackQuery(callbackId, 'Браузер уже закрыт.'); return; }
+      await this.telegram.answerCallbackQuery(callbackId, 'Закрываю…');
+      await this.closeBrowser('closed');
+      return;
+    }
     if (action === 'reject') {
       const rejected = await applications.reject(this.owner.id, applicationId);
       await this.telegram.editMessageText(this.settings.chatId, messageId,
@@ -691,23 +732,140 @@ export class TelegramBot {
    * in the background under the "one task at a time" rule. Busy by then — the job stays queued for /run apply.
    */
   private refill(question: QuestionView): void {
+    this.fillAgain(question, 'после ответа', false);
+  }
+
+  /**
+   * One job filled again in the background (`apply --job`), under the "one task at a time" rule; the report and
+   * the ✅ / question messages follow as after /run apply. `accountReady` — the owner has just signed in on its site.
+   */
+  private fillAgain(job: Pick<QuestionView, 'jobId' | 'jobTitle' | 'company'>, why: string, accountReady: boolean): void {
     const { applications } = this.services;
-    const label = `apply: ${question.jobTitle} — ${question.company} (после ответа)`;
+    const label = `apply: ${job.jobTitle} — ${job.company} (${why})`;
     const run = (async () => {
       try {
-        const run = await this.runner.exclusive(label, (signal) => applications.fillNext(this.owner.id, { jobId: question.jobId, signal }));
-        if (!run) { await this.say('Бот занят другой задачей: вакансия в очереди, её заполнит следующий /run apply.'); return; }
-        await this.say(`<b>apply</b> после ответа\n${applyReportLines(run.result).map(escapeHtml).join('\n')}`);
+        const run = await this.runner.exclusive(label, (signal) => applications.fillNext(this.owner.id, {
+          jobId: job.jobId, signal, ...(accountReady ? { accountReady } : {}),
+        }));
+        if (!run) {
+          await this.say(accountReady
+            ? 'Бот занят другой задачей: нажмите «✅ Аккаунт готов» ещё раз позже (/pending).'
+            : 'Бот занят другой задачей: вакансия в очереди, её заполнит следующий /run apply.');
+          return;
+        }
+        await this.say(`<b>apply</b> ${escapeHtml(why)}\n${applyReportLines(run.result).map(escapeHtml).join('\n')}`);
         await this.sendApply({ ready: run.result.ready, questions: run.result.questions, manual: run.result.manual, submitted: run.result.submitted });
       } catch (error) {
         const known = error instanceof ApplicationError || error instanceof BrowserBusyError;
         const message = error instanceof Error ? error.message : String(error);
-        if (!known) this.runtime.out.warn(`apply после ответа: ${message}`);
-        await this.say(escapeHtml(`Не заполнено заново: ${message}. Вакансия в очереди, её возьмёт /run apply.`));
+        if (!known) this.runtime.out.warn(`apply ${why}: ${message}`);
+        await this.say(escapeHtml(accountReady
+          ? `Не заполнено: ${message}. Повторить — «✅ Аккаунт готов» или /pending.`
+          : `Не заполнено заново: ${message}. Вакансия в очереди, её возьмёт /run apply.`));
       }
-    })().catch((error: unknown) => this.runtime.out.warn(`apply после ответа: ${error instanceof Error ? error.message : error}`));
-    const tracked = run.finally(() => { this.tasks.delete(tracked); });
+    })().catch((error: unknown) => this.runtime.out.warn(`apply ${why}: ${error instanceof Error ? error.message : error}`));
+    this.track(run);
+  }
+
+  private track(work: Promise<void>): void {
+    const tracked = work.finally(() => { this.tasks.delete(tracked); });
     this.tasks.add(tracked);
+  }
+
+  // ── Remote browser ──
+
+  /**
+   * «🖥 Открыть браузер» on a `manual` job: the runner's slot and the browser lock are taken for the whole
+   * session (no task, schedule or CLI run touches the browser meanwhile), the job's form opens in the agent's
+   * Chromium with phone emulation, and the owner gets the page as a Mini App.
+   */
+  private async openBrowser(callbackId: string, applicationId: string): Promise<void> {
+    const port = this.services.remoteBrowser;
+    if (!port) { await this.telegram.answerCallbackQuery(callbackId, 'Браузер не настроен: REMOTE_BROWSER_PUBLIC_URL в .env.'); return; }
+    if (this.browser) {
+      await this.telegram.answerCallbackQuery(callbackId, `Браузер уже открыт: ${this.browser.label}. Закрыть — «✖️ Закрыть» или /stop.`.slice(0, 190));
+      return;
+    }
+    const busy = this.runner.busyText();
+    if (busy) { await this.telegram.answerCallbackQuery(callbackId, `${busy}. Нажмите позже.`.slice(0, 190)); return; }
+    const attempt = (await this.services.applications.pending(this.owner.id)).manual.find((item) => item.id === applicationId);
+    if (!attempt) { await this.telegram.answerCallbackQuery(callbackId, 'Вакансия уже не ждёт подачи вручную.'); return; }
+    const url = attempt.applyUrl ?? attempt.url;
+    const label = browserLabel(url);
+    const hold = this.runner.hold(label);
+    if (!hold) { await this.telegram.answerCallbackQuery(callbackId, `${this.runner.busyText() ?? 'занято'}. Нажмите позже.`.slice(0, 190)); return; }
+    let lock: BrowserLock;
+    try {
+      lock = this.services.pipeline.lockBrowser('browser');
+    } catch (error) {
+      hold.release();
+      if (!(error instanceof BrowserBusyError)) throw error;
+      const { holder } = error;
+      await this.telegram.answerCallbackQuery(callbackId,
+        `занято: браузер — ${holder.task} (pid ${holder.pid}), запущено ${minutesAgo(holder.startedAt, this.runtime.now())} мин назад`.slice(0, 190));
+      return;
+    }
+    await this.telegram.answerCallbackQuery(callbackId, 'Открываю браузер…');
+    const browser: OpenBrowser = { applicationId, label, session: null, lock, release: hold.release, closing: null };
+    this.browser = browser;
+    // /stop and shutdown abort the slot: the session closes like «✖️ Закрыть».
+    hold.signal.addEventListener('abort', () => { this.track(this.closeBrowser('stop', browser)); }, { once: true });
+    let session: RemoteBrowserSession;
+    try {
+      session = await port.open(url, (reason) => { this.track(this.closeBrowser(reason, browser)); });
+    } catch (error) {
+      await this.closeBrowser('failed', browser);
+      const message = error instanceof Error ? error.message : String(error);
+      this.runtime.out.warn(`браузер: ${message}`);
+      await this.say(escapeHtml(`Браузер не открылся: ${message}`));
+      return;
+    }
+    // Closed while it was opening (/stop): the session goes too.
+    if (browser.closing) { await session.close(); return; }
+    browser.session = session;
+    const message = browserOpenedMessage(applicationId, url, session.link, remoteBrowserIdleMinutes);
+    await this.telegram.sendMessage(this.settings.chatId, message.text, { keyboard: message.keyboard });
+  }
+
+  /**
+   * Closes the remote browser once: the page stops, the tab and its emulation go, the lock and the runner's slot
+   * are released. Every reason but `ready` and `failed` is answered with «Браузер закрыт.».
+   */
+  private closeBrowser(reason: BrowserCloseReason, browser: OpenBrowser | null = this.browser): Promise<void> {
+    if (!browser) return Promise.resolve();
+    browser.closing ??= (async () => {
+      try {
+        await browser.session?.close();
+      } catch (error) {
+        this.runtime.out.warn(`браузер: не закрылся чисто: ${error instanceof Error ? error.message : error}`);
+      } finally {
+        browser.lock.release();
+        browser.release();
+        if (this.browser === browser) this.browser = null;
+      }
+      if (reason === 'idle' || reason === 'max') {
+        await this.say(`Браузер закрыт${reason === 'idle' ? ` (${Math.round(remoteBrowserIdleMinutes)} мин без действий)` : ' (прошёл час)'}.`);
+      } else if (reason === 'closed' || reason === 'stop') {
+        await this.say('Браузер закрыт.');
+      }
+    })();
+    return browser.closing;
+  }
+
+  /** «✅ Аккаунт готов»: the browser closes, and the agent fills this job again, now signed in. */
+  private async accountReady(callbackId: string, applicationId: string): Promise<void> {
+    if (this.browser && this.browser.applicationId !== applicationId) {
+      await this.telegram.answerCallbackQuery(callbackId, `Открыт браузер другой вакансии: ${this.browser.label}. Сначала «✖️ Закрыть».`.slice(0, 190));
+      return;
+    }
+    if (this.browser) await this.closeBrowser('ready');
+    const busy = this.runner.busyText();
+    if (busy) { await this.telegram.answerCallbackQuery(callbackId, `${busy}. Нажмите позже.`.slice(0, 190)); return; }
+    const attempt = (await this.services.applications.pending(this.owner.id)).manual.find((item) => item.id === applicationId);
+    if (!attempt) { await this.telegram.answerCallbackQuery(callbackId, 'Вакансия уже не ждёт подачи вручную.'); return; }
+    await this.telegram.answerCallbackQuery(callbackId, 'Запускаю агента…');
+    await this.say(`Аккаунт готов — запускаю агента на эту вакансию: ${escapeHtml(attempt.jobTitle)} — ${escapeHtml(attempt.company)}…`);
+    this.fillAgain(attempt, 'после «Аккаунт готов»', true);
   }
 
   private async report(outcome: TaskOutcome): Promise<string> {

@@ -104,3 +104,20 @@ export function applySettingsFromEnv(env: NodeJS.ProcessEnv = process.env, backe
     maxPerRun, maxUsdPerDay, cvFile: env.APPLY_CV_FILE?.trim() || null, agentCwd: env.AGENT_CWD?.trim() || defaultAgentCwd, autoSubmit: autoRaw === 'true',
   };
 }
+
+export type RemoteBrowserEnvSettings = Readonly<{ mcpUrl: string; port: number; publicUrl: string }>;
+
+/**
+ * The remote browser of the bot (plugins/remote-browser.ts): REMOTE_BROWSER_PUBLIC_URL — the public https address
+ * of the page (Tailscale HTTPS in front of 127.0.0.1:REMOTE_BROWSER_PORT, default 3420); PLAYWRIGHT_MCP_URL — the
+ * agent's Playwright MCP. Null without REMOTE_BROWSER_PUBLIC_URL: the «🖥 Открыть браузер» button then says so.
+ */
+export function remoteBrowserSettingsFromEnv(env: NodeJS.ProcessEnv = process.env): RemoteBrowserEnvSettings | null {
+  const publicUrl = env.REMOTE_BROWSER_PUBLIC_URL?.trim().replace(/\/+$/, '');
+  if (!publicUrl) return null;
+  if (!/^https?:\/\/[^/]+/.test(publicUrl)) throw new Error(`REMOTE_BROWSER_PUBLIC_URL должен быть http(s) URL, получено "${publicUrl}"`);
+  const portRaw = env.REMOTE_BROWSER_PORT?.trim();
+  const port = portRaw ? Number(portRaw) : 3420;
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error(`REMOTE_BROWSER_PORT должен быть портом 1–65535, получено "${portRaw}"`);
+  return { mcpUrl: env.PLAYWRIGHT_MCP_URL?.trim() || defaultMcpUrl, port, publicUrl };
+}

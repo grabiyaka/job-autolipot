@@ -136,6 +136,26 @@ const autoSubmitRule = `- The owner allows sending without a review: fill the fo
 - Screenshots for the owner: on every step of the form, once its fields are filled and before you press
   "Next", "Review", "Continue" or the send button, call browser_take_screenshot once (no file name).`;
 
+/**
+ * Sites with accounts. The browser keeps the owner's sessions, so a site where the owner is already signed in
+ * is filled like any other; creating an account, typing a password or solving a captcha stays the owner's
+ * (`manual`). `accountReady`: the owner has just signed in there for this job (the bot's «✅ Аккаунт готов»).
+ */
+function accountRule(accountReady: boolean): string {
+  const rule = `- Sites that need an account (Workday, iCIMS, Taleo, SuccessFactors and the like): if the browser is already
+  signed in there (the page shows the candidate's account or the application form itself, not a sign-in or
+  registration form), go on and fill the application like on any other site. Otherwise stop at once with outcome
+  "manual". Also "manual" when the site requires creating an account, registering, signing in with a password,
+  confirming an email or solving a captcha, when the application needs a site you are not allowed to open, or
+  when the site otherwise does not let you apply: say why in "summary" and put the page URL in "applyUrl".
+  Never create accounts, enter passwords or solve captchas.`;
+  if (!accountReady) return rule;
+  return `${rule}
+- The owner has just created an account / signed in on this application's site in this same browser, so expect
+  to be signed in: open the application form given in the task first and fill it. Only if it still shows a
+  sign-in or registration form, stop with outcome "manual" and say so in "summary".`;
+}
+
 /** `auto`: the fill run that sends the form itself (APPLY_AUTO_SUBMIT); the guard runs it as submit_fresh. */
 export type ApplyPromptMode = 'fill' | 'submit' | 'submit_fresh' | 'auto';
 
@@ -160,7 +180,7 @@ function filledBlock(filled: readonly FilledField[]): string {
  */
 function applySystemPrompt(
   profileMarkdown: string, answers: readonly Pick<Answer, 'question' | 'answer'>[], job: PromptJob, cvPath: string,
-  mode: ApplyPromptMode, previousFill: readonly FilledField[] = [],
+  mode: ApplyPromptMode, previousFill: readonly FilledField[] = [], accountReady = false,
 ): string {
   const withPrevious = mode === 'submit_fresh' || previousFill.length > 0;
   const draft = withPrevious && mode !== 'submit_fresh' ? `\n${draftNote}` : '';
@@ -173,10 +193,7 @@ Rules (strict):
   find its application form there (often behind an "Apply" button) and fill it (kind "external").
 - Stay on LinkedIn, the start page's site, the site the "Apply" button leads to and the applicant tracking
   systems it uses (Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Teamtailor, Personio). Do not browse elsewhere.
-- Workday, iCIMS, Taleo, SuccessFactors: stop at once with outcome "manual". Also "manual" when the site
-  requires creating an account, registering, signing in with a password or solving a captcha, when the
-  application needs a site you are not allowed to open, or when the site otherwise does not let you apply:
-  say why in "summary" and put the page URL in "applyUrl". Never create accounts, enter passwords or solve captchas.
+${accountRule(accountReady)}
 - If the job no longer accepts applications, outcome "closed".
 ${modeRules[mode]}${draft}
 - Answer only from the candidate profile and the answers below. Never invent facts (years, skills, degrees,
@@ -224,12 +241,18 @@ ${filledBlock(previousFill)}
  */
 export function buildApplyPrompt(
   profileMarkdown: string, answers: readonly Pick<Answer, 'question' | 'answer'>[], job: PromptJob, cvPath: string,
-  mode: 'fill' | 'submit' | 'auto' = 'fill', draft: readonly FilledField[] = [],
+  mode: 'fill' | 'submit' | 'auto' = 'fill', draft: readonly FilledField[] = [], signedInForm: string | null = null,
 ): Readonly<{ systemPrompt: string; prompt: string }> {
   const url = applyStartUrl(job.url);
   if (!url) throw new Error(`Не страница вакансии: ${job.url}`);
+  const form = signedInForm === null ? null : httpsPageUrl(signedInForm);
+  if (signedInForm !== null && !form) throw new Error(`Не https-страница формы: ${signedInForm}`);
   const task = mode === 'auto' ? 'Fill the form and send it once.' : 'Stop before Submit.';
-  return { systemPrompt: applySystemPrompt(profileMarkdown, answers, job, cvPath, mode, mode === 'submit' ? [] : draft), prompt: `Apply to this job: ${url} . ${task}` };
+  const where = form ? ` The application form, where the owner has just signed in: ${form} — start there.` : '';
+  return {
+    systemPrompt: applySystemPrompt(profileMarkdown, answers, job, cvPath, mode, mode === 'submit' ? [] : draft, form !== null),
+    prompt: `Apply to this job: ${url} .${where} ${task}`,
+  };
 }
 
 /** The submit run continues the fill session (`--resume`): the form is already filled. Easy Apply only. */

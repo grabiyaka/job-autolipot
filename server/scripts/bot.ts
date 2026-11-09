@@ -1,7 +1,7 @@
 import '../plugins/environment.js';
 import { createBot } from '../framework/composition/create-bot.js';
 import { defaultBrokerSocket } from '../plugins/browser-broker.js';
-import { applySettingsFromEnv, claudeAgentConfigFromEnv, jobTrackerConfigFromEnv, ollamaConfigFromEnv } from '../plugins/environment.js';
+import { applySettingsFromEnv, claudeAgentConfigFromEnv, jobTrackerConfigFromEnv, ollamaConfigFromEnv, remoteBrowserSettingsFromEnv } from '../plugins/environment.js';
 import { pause } from '../plugins/http.js';
 import { createTelegramClient } from '../plugins/telegram.js';
 import { DEFAULT_SCHEDULE_TIMEZONE } from '../src/schedules/ScheduleService.js';
@@ -43,6 +43,7 @@ async function main(): Promise<void> {
     log: { info: consoleOutput.line, warn: consoleOutput.warn },
     agentConfig: () => claudeAgentConfigFromEnv(),
     apply: applySettingsFromEnv(),
+    remoteBrowser: remoteBrowserSettingsFromEnv(),
   });
   const shutdown = new AbortController();
   try {

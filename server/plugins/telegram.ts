@@ -34,7 +34,14 @@ export type TelegramMessage = Readonly<{
 export type TelegramCallbackQuery = Readonly<{ id: string; message?: TelegramMessage; data?: string }>;
 export type TelegramUpdate = Readonly<{ update_id: number; message?: TelegramMessage; callback_query?: TelegramCallbackQuery }>;
 
-export type InlineButton = Readonly<{ text: string; data: string }>;
+/**
+ * A button under a message: `data` — a callback the bot gets back (≤ 64 bytes); `webApp` — an https page opened
+ * inside Telegram as a Mini App (private chats only); `url` — a link opened in the browser.
+ */
+export type InlineButton =
+  | Readonly<{ text: string; data: string; webApp?: never; url?: never }>
+  | Readonly<{ text: string; webApp: string; data?: never; url?: never }>
+  | Readonly<{ text: string; url: string; data?: never; webApp?: never }>;
 export type InlineKeyboard = readonly (readonly InlineButton[])[];
 export type MessageOptions = Readonly<{ keyboard?: InlineKeyboard }>;
 
@@ -88,8 +95,15 @@ export function splitMessage(text: string, limit = MESSAGE_MAX_LENGTH): string[]
   return parts;
 }
 
-const markup = (keyboard: InlineKeyboard | undefined) => (keyboard
-  ? { reply_markup: { inline_keyboard: keyboard.map((row) => row.map((button) => ({ text: button.text, callback_data: button.data }))) } }
+function buttonMarkup(button: InlineButton): Record<string, unknown> {
+  if (button.webApp !== undefined) return { text: button.text, web_app: { url: button.webApp } };
+  if (button.url !== undefined) return { text: button.text, url: button.url };
+  return { text: button.text, callback_data: button.data };
+}
+
+/** `reply_markup` of Bot API for an inline keyboard; nothing without one. */
+export const markup = (keyboard: InlineKeyboard | undefined) => (keyboard
+  ? { reply_markup: { inline_keyboard: keyboard.map((row) => row.map(buttonMarkup)) } }
   : {});
 
 export function createTelegramClient(config: TelegramConfig): TelegramClient {

@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createTelegramClient, escapeHtml, splitMessage, TelegramError } from '../plugins/telegram.js';
+import { createTelegramClient, escapeHtml, markup, splitMessage, TelegramError } from '../plugins/telegram.js';
 
 const token = '123456:test-secret-bot-token-never-in-errors';
 
@@ -168,5 +168,19 @@ describe('Telegram plugin against a fake Bot API', () => {
     expect(escapeHtml('<a> & b')).toBe('&lt;a&gt; &amp; b');
     expect(splitMessage('x'.repeat(10), 4)).toEqual(['xxxx', 'xxxx', 'xx']);
     expect(splitMessage('ab\ncd\nef', 5)).toEqual(['ab\ncd', 'ef']);
+  });
+});
+
+describe('inline keyboard markup', () => {
+  it('callback, web_app and url buttons', () => {
+    expect(markup([[{ text: 'a', data: 'a:ok:1' }], [{ text: 'b', webApp: 'https://rb.example/s/t' }, { text: 'c', url: 'https://x.example/' }]])).toEqual({
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: 'a', callback_data: 'a:ok:1' }],
+          [{ text: 'b', web_app: { url: 'https://rb.example/s/t' } }, { text: 'c', url: 'https://x.example/' }],
+        ],
+      },
+    });
+    expect(markup(undefined)).toEqual({});
   });
 });

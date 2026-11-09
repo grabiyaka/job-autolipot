@@ -84,7 +84,18 @@ describe('ApplicationRules', () => {
     const fill = buildApplyPrompt('# P', [], job, '/x.pdf');
     expect(fill.prompt).toBe('Apply to this job: https://jobs.example/careers/42 . Stop before Submit.');
     expect(fill.systemPrompt).toContain('click it and fill the application form there (kind "external")');
-    expect(fill.systemPrompt).toContain('Workday, iCIMS, Taleo, SuccessFactors: stop at once with outcome "manual"');
+    expect(fill.systemPrompt).toContain('Sites that need an account (Workday, iCIMS, Taleo, SuccessFactors and the like): if the browser is already\n  signed in there');
+    expect(fill.systemPrompt).toContain('Otherwise stop at once with outcome\n  "manual"');
+    expect(fill.systemPrompt).toContain('Never create accounts, enter passwords or solve captchas.');
+    expect(fill.systemPrompt).not.toContain('The owner has just created an account');
+
+    // «Аккаунт готов»: the run starts on the form where the owner signed in.
+    const signedIn = buildApplyPrompt('# P', [], job, '/x.pdf', 'fill', [], 'https://acme.wd3.myworkdayjobs.com/job/1#x');
+    expect(signedIn.prompt).toBe('Apply to this job: https://jobs.example/careers/42 . The application form, where the owner has just signed in: '
+      + 'https://acme.wd3.myworkdayjobs.com/job/1 — start there. Stop before Submit.');
+    expect(signedIn.systemPrompt).toContain('The owner has just created an account / signed in on this application\'s site');
+    expect(signedIn.systemPrompt).toContain('Never create accounts, enter passwords or solve captchas.');
+    expect(() => buildApplyPrompt('# P', [], job, '/x.pdf', 'fill', [], 'http://acme.example/form')).toThrow(/https/);
     expect(fill.systemPrompt).toContain('Cover letter / message fields: if REQUIRED, write a short cover letter');
     expect(fill.systemPrompt).toContain('On other sites type them from the profile');
     expect(fill.systemPrompt).not.toContain('outcome "external"');

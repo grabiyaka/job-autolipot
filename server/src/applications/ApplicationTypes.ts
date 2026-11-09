@@ -112,6 +112,12 @@ export type FillOptions = Readonly<{
   limit?: number;
   /** Only this job (its id here or its Job-Tracker id); it need not be in To Apply. */
   jobId?: string;
+  /**
+   * With `jobId`: the owner has just created an account / signed in on the job's application site in the agent's
+   * browser (the bot's remote browser). The agent starts on the form of the last `manual` attempt and goes on
+   * signed in instead of stopping at the account wall.
+   */
+  accountReady?: boolean;
   signal?: AbortSignal;
 }>;
 

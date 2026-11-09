@@ -4,9 +4,10 @@
 LinkedIn Easy Apply **или форму на сайте компании / ATS** (Greenhouse, Lever, Ashby…) по профилю из Job-Tracker
 и банку ответов и **останавливается перед отправкой**. Отправка идёт только после твоего ✅: кнопка в Telegram,
 `--submit` в CLI или `POST /api/applications/:id/submit`. Без ✅ — только с `APPLY_AUTO_SUBMIT=true`
-([автоотправка](#автоотправка-apply_auto_submittrue)). Сайты с аккаунтом, входом по
-паролю или капчей (Workday, iCIMS, Taleo, SuccessFactors) агент не трогает: попытка `manual`, ссылка тебе,
-после подачи — «подал сам» (`--manual-applied`).
+([автоотправка](#автоотправка-apply_auto_submittrue)). Сайты с аккаунтом (Workday, iCIMS, Taleo, SuccessFactors…)
+агент заполняет, только если в браузере уже есть вход; аккаунты, пароли и капчу — никогда: попытка `manual`, ссылка тебе,
+после подачи — «подал сам» (`--manual-applied`). Или аккаунт заводится с телефона в браузере агента
+([удалённый браузер](telegram.md#удалённый-браузер-)), и по «✅ Аккаунт готов» агент заполняет вакансию заново.
 
 Задание и решения: [phase3/d-applications.md](phase3/d-applications.md), [phase3/f-external-apply.md](phase3/f-external-apply.md)
 (внешние сайты, пакет Е), [phase3/decisions.md](phase3/decisions.md).
@@ -39,6 +40,7 @@ JT To Apply (GET /api/ai/jobs?evaluation=any, старые первыми, вс�
                  manual (аккаунт, капча) → попытка и вакансия manual; applyUrl не https → manual без запуска агента
        submitted → попытка submitted, вакансия applied → JT POST /api/ai/jobs/:id/application
 manual → «подал сам» (--manual-applied, POST …/manual-applied) → попытка submitted, вакансия applied → JT (company_site_manual)
+       «🖥 Открыть браузер» → аккаунт с телефона → «✅ Аккаунт готов» → fillNext(jobId, accountReady): старт на applyUrl попытки
        ❌ → попытка и вакансия skipped
 ```
 
@@ -77,7 +79,7 @@ manual → «подал сам» (--manual-applied, POST …/manual-applied) →
 | `submitted` | отправлено, отметка в JT ещё не прошла (JT не ответил или 409) |
 | `applied` | отправлено и отмечено в JT (или вакансии в JT уже нет в To Apply, или она не из JT) |
 | `needs_input` | агент задал вопросы |
-| `manual` | подать может только ты: аккаунт, вход, капча, Workday/iCIMS/Taleo/SuccessFactors, ссылка не https; ссылка в `applyUrl` |
+| `manual` | подать может только ты: аккаунт, вход, капча, Workday/iCIMS/Taleo/SuccessFactors без входа в браузере, ссылка не https; ссылка в `applyUrl` |
 | `skipped` | вакансия закрыта, не проходит вопрос-фильтр, ❌ |
 | `failed` | агент не справился, остановлен, ответ не по схеме |
 
@@ -100,8 +102,13 @@ manual → «подал сам» (--manual-applied, POST …/manual-applied) →
 - LinkedIn с Easy Apply — диалог Easy Apply; только Apply наружу — идти по ней и заполнять форму там; вакансия не
   с LinkedIn — начать с её страницы; ходить только по LinkedIn, сайту стартовой страницы, сайту, куда ведёт Apply,
   и известным ATS (защита [agent-runner.md](agent-runner.md) — то же самое и жёстко);
-- Workday, iCIMS, Taleo, SuccessFactors — сразу `manual`; регистрация, вход по паролю, капча, нужен запрещённый
-  сайт — `manual` с причиной в `summary` и `applyUrl`; вакансия закрыта — `closed`;
+- сайты с аккаунтом (Workday, iCIMS, Taleo, SuccessFactors…): в браузере уже есть вход (видна форма или кабинет,
+  а не вход/регистрация) — заполнять как любой сайт; иначе сразу `manual`. Регистрация, вход по паролю, подтверждение
+  email, капча, нужен запрещённый сайт — `manual` с причиной в `summary` и `applyUrl`; вакансия закрыта — `closed`;
+- `accountReady` (`FillOptions`, только с `jobId`; «✅ Аккаунт готов» в боте): владелец только что вошёл на сайт в браузере
+  агента. Агент стартует с `applyUrl` последней `manual`-попытки (это и `startUrl` защиты), в задании — «форма, где владелец
+  только что вошёл: … начни там», в промпте — «ожидай, что вход есть; всё ещё просят войти — `manual`». Других проверок
+  «сразу manual» в коде нет: решение принимал только промпт (кроме не-https ссылок);
 - отправка (Submit / Send / Apply после ввода) и Enter запрещены (и хуком тоже); на последнем шаге — `ready_to_submit`,
   во внешней форме — после заполнения всех полей;
 - ответы только из профиля и банка; обязательное без ответа — `needs_input` со списком вопросов;
@@ -239,6 +246,7 @@ HTTP (нужен вход, видны только свои записи, чуж
 
 ## Ещё не сделано 📝
 
+- живая проверка удалённого браузера на настоящем Workday / iCIMS (регистрация с телефона → «✅ Аккаунт готов» → агент);
 - живой пилот внешних форм ([f-external-apply.md](phase3/f-external-apply.md#пилот-до-кода-в-общем-потоке)):
   `fill` на 2–3 Greenhouse / Lever (iframe, загрузка резюме, стоимость), затем `submit_fresh` после явного «да, отправляй»;
 - расход повторного заполнения по ✅ (`submit_fresh`) записывается в попытку и попадает в день её начала, а не
