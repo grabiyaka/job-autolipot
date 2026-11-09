@@ -22,6 +22,7 @@
     "collect": "tsx scripts/collect.ts",
     "score": "tsx scripts/score.ts",
     "cycle": "tsx scripts/cycle.ts",
+    "hunt": "tsx scripts/hunt.ts",
     "browser:check": "tsx scripts/browser-check.ts",
     "answers": "tsx scripts/answers.ts",
     "bot": "tsx scripts/bot.ts",

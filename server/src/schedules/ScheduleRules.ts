@@ -1,7 +1,10 @@
 import { ApplicationError } from '../../framework/core/errors.js';
 
-/** Pipeline tasks the bot runs now or on a schedule; apply fills forms and stops before Submit. */
-export const pipelineTasks = ['collect', 'score', 'cycle', 'apply'] as const;
+/**
+ * Pipeline tasks the bot runs now or on a schedule; apply fills forms and stops before Submit;
+ * hunt collects from other job boards through the browser agent, then scores and sends like cycle.
+ */
+export const pipelineTasks = ['collect', 'score', 'cycle', 'apply', 'hunt'] as const;
 export type PipelineTask = typeof pipelineTasks[number];
 
 export const taskTriggers = ['manual', 'schedule'] as const;
@@ -19,7 +22,7 @@ export const SUMMARY_MAX_LENGTH = 2000;
 
 /** Task flags kept with a schedule or given to /run. Only the flags of that task are accepted. */
 export type TaskOptions = Readonly<{
-  /** No more than N jobs per owner when scoring; no more than N agent runs when applying. */
+  /** No more than N jobs per owner when scoring; N agent runs when applying; N descriptions per search in hunt. */
   limit?: number;
   /** From which score a job goes to queued. */
   threshold?: number;
@@ -32,9 +35,9 @@ export type TaskOptions = Readonly<{
 }>;
 
 const optionTasks: Record<keyof TaskOptions, readonly PipelineTask[]> = {
-  limit: ['score', 'cycle', 'apply'],
-  threshold: ['score', 'cycle'],
-  maxMinutes: ['collect', 'score', 'cycle', 'apply'],
+  limit: ['score', 'cycle', 'apply', 'hunt'],
+  threshold: ['score', 'cycle', 'hunt'],
+  maxMinutes: ['collect', 'score', 'cycle', 'apply', 'hunt'],
   easyApply: ['collect', 'cycle'],
   skipCollect: ['cycle'],
 };
@@ -72,7 +75,7 @@ export function taskOptions(task: PipelineTask, input: Readonly<Record<string, u
       throw new ApplicationError('INVALID_OPTIONS', `Флаг «${name}» не относится к задаче ${task}.`, 400);
     }
     switch (key) {
-      case 'limit': options.limit = integer('limit', value, 1, 10_000); break;
+      case 'limit': options.limit = integer('limit', value, 1, task === 'hunt' ? 50 : 10_000); break;
       case 'threshold': options.threshold = integer('threshold', value, 0, 100); break;
       case 'maxMinutes': options.maxMinutes = integer('maxMinutes', value, 1, 24 * 60); break;
       case 'easyApply': options.easyApply = flag('easyApply', value); break;

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
-import { allowedTools, denyReasons, disallowedTools } from '../plugins/agent-guard-rules.js';
+import { allowedTools, browseTools, denyReasons, disallowedTools } from '../plugins/agent-guard-rules.js';
 import {
   agentArgs, AgentResponseError, AgentTimeoutError, AgentUnavailableError, agentUploadPath, costMicros, createClaudeAgent, resultTokens, syncAgentFiles,
 } from '../plugins/claude-agent.js';
@@ -70,7 +70,7 @@ describe('claude agent plugin', () => {
     const { argv, cwd, env } = recorded();
     expect(cwd).toBe(cfg.agentCwd);
     expect(path.dirname(result.runDir)).toBe(path.join(cfg.workDir, 'runs'));
-    expect(env).toEqual({ APPLY_MODE: 'fill', APPLY_GUARD_DIR: result.runDir, APPLY_UPLOAD_DIR: path.join(cfg.agentCwd, 'files'), APPLY_START_URL: null, CLAUDECODE: null });
+    expect(env).toEqual({ APPLY_MODE: 'fill', APPLY_GUARD_DIR: result.runDir, APPLY_UPLOAD_DIR: path.join(cfg.agentCwd, 'files'), APPLY_START_URL: null, CLAUDECODE: null, APPLY_ALLOWED_HOSTS: null });
     expect(readdirSync(path.join(cfg.agentCwd, 'files'))).toEqual(['CV.pdf']);
     const flag = (name: string) => argv[argv.indexOf(name) + 1];
     expect(argv.slice(0, 2)).toEqual(['-p', request.prompt]);
@@ -130,6 +130,30 @@ describe('claude agent plugin', () => {
     fake('hook', { FAKE_CLAUDE_TOOL: navigate('https://other.test/') });
     const denied = await createClaudeAgent(config()).run({ ...request, startUrl: 'https://careers.acme.test/jobs/1' });
     expect(JSON.parse((denied.output as { hook: string }).hook).hookSpecificOutput.permissionDecisionReason).toBe(denyReasons.foreignSite);
+  });
+
+  it('browse (the collector agent): read-only tools, --max-turns, the site hosts to the guard, no upload copies', async () => {
+    fake('success');
+    process.env.APPLY_ALLOWED_HOSTS = 'evil.test';
+    const cfg = config({ filesSource: path.join(root, 'missing-files') });
+    const browse = { ...request, mode: 'browse' as const, allowedHosts: ['djinni.co', 'www.djinni.co'], maxTurns: 40 };
+    const result = await createClaudeAgent(cfg).run(browse);
+    delete process.env.APPLY_ALLOWED_HOSTS;
+    const { argv, env } = recorded();
+    expect(env).toMatchObject({ APPLY_MODE: 'browse', APPLY_GUARD_DIR: result.runDir, APPLY_UPLOAD_DIR: null, APPLY_ALLOWED_HOSTS: 'djinni.co,www.djinni.co' });
+    const flag = (name: string) => argv[argv.indexOf(name) + 1];
+    expect(flag('--max-turns')).toBe('40');
+    expect(flag('--allowedTools')!.split(',')).toEqual(browseTools);
+    expect(flag('--disallowedTools')).toContain('mcp__playwright__browser_file_upload');
+    expect(flag('--allowedTools')).not.toContain('browser_file_upload');
+    await expect(createClaudeAgent(cfg).run({ ...browse, allowedHosts: [] })).rejects.toThrow('хосты');
+
+    const navigate = (url: string) => JSON.stringify({ tool_name: 'mcp__playwright__browser_navigate', tool_input: { url } });
+    fake('hook', { FAKE_CLAUDE_TOOL: navigate('https://djinni.co/jobs/') });
+    expect((await createClaudeAgent(cfg).run(browse)).output).toEqual({ hook: '', status: 0 });
+    fake('hook', { FAKE_CLAUDE_TOOL: navigate('https://www.linkedin.com/jobs/') });
+    const denied = await createClaudeAgent(cfg).run(browse);
+    expect(JSON.parse((denied.output as { hook: string }).hook).hookSpecificOutput.permissionDecisionReason).toBe(denyReasons.browseSite);
   });
 
   it('the generated hook blocks Submit in fill and logs it into the result', async () => {

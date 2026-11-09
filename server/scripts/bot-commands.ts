@@ -6,6 +6,7 @@ import type { ApplicationView, FillReport, QuestionView, SubmitReport, Submitted
 import type { JobStatus, PipelineJob } from '../src/jobs/JobTypes.js';
 import { isPipelineTask, pipelineTasks } from '../src/schedules/ScheduleService.js';
 import type { PipelineTask, ScheduleView, TaskRun, TaskRunStatus, TaskTrigger } from '../src/schedules/ScheduleService.js';
+import { agentSiteLabel, agentSourceId } from '../src/searches/AgentSites.js';
 import type { Search, SearchInput } from '../src/searches/SearchService.js';
 
 /**
@@ -70,16 +71,22 @@ const taskList = pipelineTasks.join(' | ');
 /** Plain text: the bot escapes it. */
 export const searchUsage = 'Формат: /search <ключевые слова> | <локация> | +node,typescript | -java,qa | all\n'
   + 'Обязательны только ключевые слова. +слова — хотя бы одно должно быть в названии вакансии, -слова — отсеять, '
-  + 'all — не только Easy Apply (по умолчанию только Easy Apply). Пример: /search node.js | Remote | +node,backend | -java';
+  + 'all — не только Easy Apply (по умолчанию только Easy Apply). Пример: /search node.js | Remote | +node,backend | -java\n'
+  + 'Другие биржи через агента (задача /hunt): /search @indeed node.js | Ireland | +node | -java — '
+  + '@indeed, @djinni, @remoteok, @wellfound или @https://адрес-страницы-поиска';
 
 const termList = (text: string): string[] => text.split(',').map((term) => term.trim()).filter(Boolean);
 
 /**
  * `/search node.js | Remote | +node,typescript | -java,qa | all`: a saved LinkedIn search. Parts after the
  * keywords go in any order; a part without a marker is the location. Easy Apply only unless `all`.
+ * `/search @indeed node.js | Ireland | +node | -java`: a search the agent runs on that site (task hunt);
+ * the site is a known id or an https address, checked when the search is saved.
  */
 export function parseSearch(body: string): SearchInput | string {
-  const [keywords = '', ...parts] = body.split('|').map((part) => part.trim());
+  const siteMatch = body.trim().match(/^@(\S+)\s*(.*)$/s);
+  const site = siteMatch?.[1];
+  const [keywords = '', ...parts] = (siteMatch ? siteMatch[2]! : body).split('|').map((part) => part.trim());
   if (!keywords) return searchUsage;
   let location: string | undefined;
   let includeTitle: string[] = [];
@@ -95,6 +102,7 @@ export function parseSearch(body: string): SearchInput | string {
     else if (location === undefined) location = part;
     else return `Две локации: «${location}» и «${part}». ${searchUsage}`;
   }
+  if (site !== undefined) return { source: agentSourceId, site, keywords, ...(location ? { location } : {}), includeTitle, excludeTitle };
   return { source: 'linkedin', keywords, ...(location ? { location } : {}), includeTitle, excludeTitle, easyApplyOnly };
 }
 
@@ -134,6 +142,7 @@ export function parseCommand(text: string): BotCommand | null {
     case 'collect':
     case 'score':
     case 'cycle':
+    case 'hunt':
     case 'apply': {
       // A menu shortcut: `/cycle limit=20` is `/run cycle limit=20`.
       const options = parseOptions(words);
@@ -210,12 +219,13 @@ export const menuCommands: ReadonlyArray<Readonly<{ command: string; description
   { command: 'cycle', description: 'Полный цикл: собрать → оценить → в To Apply' },
   { command: 'collect', description: 'Только собрать вакансии по поискам' },
   { command: 'score', description: 'Только оценить найденные вакансии' },
+  { command: 'hunt', description: 'Другие биржи через агента: собрать → оценить → To Apply' },
   { command: 'apply', description: 'Заполнить формы из To Apply (отправка после ✅)' },
   { command: 'stop', description: 'Остановить текущую задачу' },
   { command: 'pending', description: 'Ждут ✅, подать вручную, вопросы агента' },
   { command: 'queued', description: '10 лучших отобранных вакансий' },
   { command: 'searches', description: 'Сохранённые поиски (вкл/выкл, удалить)' },
-  { command: 'search', description: 'Добавить поиск LinkedIn (покажет формат)' },
+  { command: 'search', description: 'Добавить поиск LinkedIn или @биржи (покажет формат)' },
   { command: 'schedule', description: 'Расписания запусков' },
   { command: 'answers', description: 'Банк ответов на вопросы форм' },
   { command: 'answer', description: 'Добавить ответ (покажет формат)' },
@@ -228,14 +238,17 @@ export const helpText = [
   '<b>С чего начать</b>',
   '1. /search node.js | Remote | +node,backend | -java — добавить поиск LinkedIn (/searches — список)',
   '2. /cycle — собрать вакансии, оценить, лучшие уйдут в To Apply (/status — как идёт, /stop — остановить)',
-  '3. /queued — посмотреть отобранные',
-  '4. /apply — агент заполнит формы и пришлёт каждую на ✅; /pending — что ждёт решения',
-  '5. По расписанию: /schedule cycle 0 9,18 * * *, затем /on cycle',
+  '3. /search @indeed … и /hunt — другие биржи через агента (indeed, djinni, remoteok, wellfound, любой https-адрес)',
+  '4. /queued — посмотреть отобранные',
+  '5. /apply — агент заполнит формы и пришлёт каждую на ✅; /pending — что ждёт решения',
+  '6. По расписанию: /schedule cycle 0 9,18 * * *, затем /on cycle (так же /schedule hunt …, /on hunt)',
   'Все команды — в меню «/» слева от поля ввода.',
   '',
   '<b>Запуск</b> (флаги необязательны: limit=N threshold=N max=минуты easy skip-collect)',
   '/cycle — сбор → оценка → To Apply; /cycle skip-collect — без сбора',
   '/collect — только сбор · /score — только оценка',
+  '/hunt limit=N — другие биржи через агента Claude: выдача → описания новых (до N на поиск, по умолчанию 10) → оценка → To Apply;',
+  '  только чтение, капча или вход — сайт пропускается до следующего прогона',
   '/apply limit=N — заполнить формы из To Apply (LinkedIn Easy Apply и внешние сайты: Greenhouse, Lever…); перед отправкой агент останавливается',
   '  ✅ на внешней форме — агент заполнит её заново и отправит (пара минут); ❌ — отказаться',
   '  🖐 «подать вручную» (Workday, аккаунт, капча) — ссылка; подали сами — «✅ подал сам», отмечу в Job-Tracker;',
@@ -251,6 +264,7 @@ export const helpText = [
   '<b>Поиски</b>',
   '/searches — сохранённые поиски с кнопками вкл/выкл и 🗑',
   '/search node.js | Remote | +node,backend | -java — добавить поиск LinkedIn (только Easy Apply; all — все вакансии)',
+  '/search @indeed node.js | Ireland | +node | -java — поиск через агента (@djinni, @remoteok, @wellfound, @https://…); собирает /hunt',
   '',
   '<b>Расписания</b>',
   '/schedule — расписания с кнопками',
@@ -292,7 +306,7 @@ export type StatusData = Readonly<{
 export type TaskProgress = Readonly<{
   task: string;
   startedAt: Date;
-  stage: 'collect' | 'score' | 'apply' | null;
+  stage: 'collect' | 'hunt' | 'score' | 'apply' | null;
   stageStartedAt: Date | null;
   /** The last line of the collector: «linkedin «node.js» стр. 3: карточек 25, новых 12». */
   collectLine: string | null;
@@ -302,7 +316,7 @@ export type TaskProgress = Readonly<{
   lastScored: string | null;
 }>;
 
-const stageNames: Record<NonNullable<TaskProgress['stage']>, string> = { collect: 'сбор', score: 'оценка', apply: 'подача' };
+const stageNames: Record<NonNullable<TaskProgress['stage']>, string> = { collect: 'сбор', hunt: 'сбор через агента', score: 'оценка', apply: 'подача' };
 
 /** Plain text (statusText escapes it): the task, its stage and the last step. */
 export function progressText(progress: TaskProgress, now: Date): string {
@@ -311,6 +325,7 @@ export function progressText(progress: TaskProgress, now: Date): string {
   const stage = `этап: ${stageNames[progress.stage]}${progress.stageStartedAt ? ` (${minutesAgo(progress.stageStartedAt, now)} мин)` : ''}`;
   const details: string[] = [];
   if (progress.stage === 'collect') details.push(progress.collectLine ?? 'открываю поиск…');
+  if (progress.stage === 'hunt') details.push(progress.collectLine ?? 'агент открывает выдачу…');
   if (progress.stage === 'score') {
     details.push(`оценено ${progress.scored}, в queued ${progress.queued}; остаток — found выше`);
     if (progress.lastScored) details.push(`последняя: ${progress.lastScored}`);
@@ -386,9 +401,10 @@ export function searchesMessage(searches: readonly Search[]): { text: string; ke
   };
 }
 
-/** «linkedin «node.js» (Remote) easy apply +node −java», escaped. */
+/** «linkedin «node.js» (Remote) easy apply +node −java» or «@indeed «node.js» (Ireland)», escaped. */
 export function searchLine(search: Search): string {
-  const name = `${search.source} «${search.keywords}»${search.location ? ` (${search.location})` : ''}`;
+  const where = search.source === agentSourceId ? `@${agentSiteLabel(search.site)}` : search.source;
+  const name = `${where} «${search.keywords}»${search.location ? ` (${search.location})` : ''}`;
   const flags = [search.easyApplyOnly ? 'easy apply' : '', search.includeTitle.length ? `+${search.includeTitle.join(',')}` : '',
     search.excludeTitle.length ? `−${search.excludeTitle.join(',')}` : ''].filter(Boolean).join(' ');
   return `${escapeHtml(name)}${flags ? ` ${escapeHtml(flags)}` : ''}`;

@@ -14,6 +14,14 @@ import type { RefInfo } from './agent-snapshot-refs.js';
  *   listed below (Playwright plus the harmless built-ins StructuredOutput and ToolSearch).
  * A false denial is cheaper than a false submission, so "submit" matches any button with that word.
  *
+ * browse (the collector agent of the hunt task) is read-only: only the reading tools of `browseTools`;
+ * navigation and new tabs only to https on the site's hosts (APPLY_ALLOWED_HOSTS, nothing else — not even
+ * hosts reached by clicks); no reading or clicking once the page is on another host; no Enter and no
+ * `submit: true` (result pages are opened by URL); typing only into a search-like field, never into an
+ * e-mail / password / phone field; no click on an element whose real name (or the agent's own words) says
+ * apply, submit, sign in / up, log in, register, subscribe, save the job…; tabs may be opened and listed,
+ * never selected or closed (the collector closes the agent's tabs itself).
+ *
  * Two kinds of submit words. Strong ones (submit, send, absenden…) mean submit on every page. Apply
  * words (apply, bewerb, postuler, candidat, solicitar) mean submit only on a page outside LinkedIn and
  * only after the agent has typed, selected, uploaded or clicked a checkbox/radio/switch/option on that
@@ -29,6 +37,8 @@ import type { RefInfo } from './agent-snapshot-refs.js';
 
 export const applyModes = ['fill', 'submit', 'submit_fresh'] as const;
 export type ApplyMode = typeof applyModes[number];
+/** Every mode of the guard: the apply modes and the read-only `browse` of the collector agent. */
+export type AgentMode = ApplyMode | 'browse';
 
 const playwright = 'mcp__playwright__';
 /**
@@ -48,6 +58,22 @@ export const disallowedTools = [
   ...['browser_evaluate', 'browser_run_code_unsafe', 'browser_press_key', 'browser_handle_dialog', 'browser_close']
     .map((name) => `${playwright}${name}`),
 ];
+
+/** Tools of the read-only collector agent (browse mode). */
+export const browseTools = [
+  ...builtinTools,
+  ...['browser_navigate', 'browser_navigate_back', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press_key', 'browser_wait_for', 'browser_tabs']
+    .map((name) => `${playwright}${name}`),
+];
+export const browseDisallowedTools = [
+  'Bash', 'Edit', 'Write', 'NotebookEdit', 'Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'Task', 'Agent',
+  ...['browser_evaluate', 'browser_run_code_unsafe', 'browser_file_upload', 'browser_fill_form', 'browser_select_option', 'browser_handle_dialog',
+    'browser_close', 'browser_drag', 'browser_drop', 'browser_take_screenshot', 'browser_find'].map((name) => `${playwright}${name}`),
+];
+
+/** --allowedTools / --disallowedTools of a run in this mode. */
+export const toolsForMode = (mode: AgentMode): Readonly<{ allowed: readonly string[]; disallowed: readonly string[] }> =>
+  (mode === 'browse' ? { allowed: browseTools, disallowed: browseDisallowedTools } : { allowed: allowedTools, disallowed: disallowedTools });
 
 /**
  * Where the user keeps files for the agent (CV). Playwright MCP may not read it directly: the plugin
@@ -118,11 +144,32 @@ export const denyReasons = {
   foreignSite: 'Host not allowed for this attempt. If the application needs another site, stop and report outcome "manual".',
   noUploadDir: 'Uploads are not configured in this run (APPLY_UPLOAD_DIR).',
   unknownRef: 'Take browser_snapshot first: unknown element ref.',
+  browseOnly: 'Read-only run: do not apply, sign in, sign up, register, subscribe or save anything. Read the page instead.',
+  browseSite: 'Only the job board of this run may be opened. Stay on its pages.',
+  browseOffSite: 'The page is not on the job board of this run: go back (browser_navigate_back) or navigate to the board.',
+  browseEnter: 'Enter is not allowed in this run: open the results page by its URL, or click the search button.',
+  browseTypeSubmit: 'submit: true is not allowed in this run: click the search button instead.',
+  browseTypeField: 'Typing is allowed only into a search field (keywords, location), never e-mail, password or other form fields.',
+  browseTabs: 'Only browser_tabs "new" and "list" are allowed: the collector switches and closes tabs itself.',
 } as const;
 
-export function parseApplyMode(value: string | undefined): ApplyMode {
+/**
+ * Words of buttons and links a read-only collector never clicks: applying, sending, accounts, subscriptions,
+ * saving a job, posting a job (English, Russian, Ukrainian, German).
+ */
+export const browseDenyWords = new RegExp([
+  'apply', 'submit', 'send', 'sign.?in', 'sign.?up', 'log.?in', 'log.?on', 'register', 'subscri', 'create.{0,12}account', 'join now',
+  'save.{0,6}job', 'save this', 'post.{0,3}a.{0,3}job', 'hire', 'continue with', 'upload', 'unlock', 'upgrade', 'premium', 'checkout', 'buy',
+  'bewerb', 'anmeld', 'registrier', 'отклик', 'откликн', 'відгук', 'войти', 'вход', 'увійти', 'регистр', 'зареєстр', 'подпис', 'підпис', 'отправ', 'надісл', 'сохран', 'зберег',
+].join('|'), 'iu');
+/** A field that takes a search query; anything personal is never typed into. */
+const searchFieldWords = /search|keyword|query|what|where|title|skill|location|city|role|position|job|find|пошук|поиск|ключ|посад|должн|місто|город/iu;
+const personalFieldWords = /mail|password|passwort|пароль|phone|телефон|login|user.?name|card|cvv|first.?name|last.?name|full.?name|ім'я|имя/iu;
+const searchFieldRoles = new Set(['searchbox', 'textbox', 'combobox']);
+
+export function parseApplyMode(value: string | undefined): AgentMode {
   // Anything unknown gets the stricter mode.
-  return value === 'submit' || value === 'submit_fresh' ? value : 'fill';
+  return value === 'submit' || value === 'submit_fresh' || value === 'browse' ? value : 'fill';
 }
 
 /** Lower-case host of an https URL; null for anything else (http, about:, not a URL). */
@@ -171,6 +218,8 @@ export type GuardContext = Readonly<{
   startHost: string | null;
   /** https hosts the browser has been on in this attempt (Page URL of tool responses). */
   visitedHosts: readonly string[];
+  /** browse mode: the only https hosts the browser may open (APPLY_ALLOWED_HOSTS); absent or empty — none. */
+  allowedHosts?: readonly string[];
 }>;
 
 /** Refs an element tool acts on: `target` (current MCP) or `ref`, and every field of fill_form. */
@@ -229,9 +278,58 @@ function afterAllowed(name: string, input: Record<string, unknown>, state: Guard
   return { allow: true, state: { ...state, inputPages: [...state.inputPages, page] } };
 }
 
-export function guardDecision(mode: ApplyMode, tool: string, args: unknown, state: GuardState, context: GuardContext): GuardDecision {
+/** https on one of the hosts of a browse run (exact host). */
+export function isBrowseUrl(value: unknown, allowedHosts: readonly string[]): boolean {
+  const host = httpsHost(value);
+  return host !== null && allowedHosts.includes(host);
+}
+
+/** A page outside the board: http(s) on another host. Blank and error pages of the new tab are not off the board. */
+function offBoard(page: string | null, allowedHosts: readonly string[]): boolean {
+  if (page === null || !/^https?:/i.test(page)) return false;
+  try { return !allowedHosts.includes(new URL(page).hostname.toLowerCase()); } catch { return false; }
+}
+
+/** browse: the read-only collector; the state never changes (no submit, no input pages). */
+function browseDecision(tool: string, input: Record<string, unknown>, state: GuardState, context: GuardContext): GuardDecision {
+  const allowedHosts = context.allowedHosts ?? [];
+  const allow: GuardDecision = { allow: true, state };
+  if (tool === `${playwright}browser_press_key` && /enter/i.test(String(input.key))) return deny(denyReasons.browseEnter, state);
+  if (!browseTools.includes(tool)) return deny(denyReasons.notAllowed, state);
+  if (builtinTools.includes(tool)) return allow;
+  const name = tool.slice(playwright.length);
+  switch (name) {
+    case 'browser_navigate':
+      return isBrowseUrl(input.url, allowedHosts) ? allow : deny(denyReasons.browseSite, state);
+    case 'browser_navigate_back':
+      return allow;
+    case 'browser_tabs':
+      if (input.action === 'list') return allow;
+      if (input.action !== 'new') return deny(denyReasons.browseTabs, state);
+      return input.url === undefined || isBrowseUrl(input.url, allowedHosts) ? allow : deny(denyReasons.browseSite, state);
+  }
+  if (offBoard(context.page, allowedHosts)) return deny(denyReasons.browseOffSite, state);
+  if (name === 'browser_type' && input.submit) return deny(denyReasons.browseTypeSubmit, state);
+  if (name !== 'browser_click' && name !== 'browser_type') return allow; // snapshot, wait_for, other keys
+
+  const ref = input.target ?? input.ref;
+  const info = typeof ref === 'string' ? context.refs[ref] : undefined;
+  if (!info) return deny(denyReasons.unknownRef, state);
+  if (name === 'browser_type') {
+    const field = `${info.name} ${info.text} ${String(input.element ?? '')}`;
+    const searchField = info.role === 'searchbox' || (searchFieldRoles.has(info.role) && searchFieldWords.test(field));
+    return searchField && !personalFieldWords.test(field) ? allow : deny(denyReasons.browseTypeField, state);
+  }
+  // A link or button is judged by its real name; descendant text only when it has none (a card's
+  // «Easily apply» badge must not block opening the card). The agent's own words count too.
+  const real = `${info.role} ${info.name || info.text}`;
+  return browseDenyWords.test(real) || browseDenyWords.test(String(input.element ?? '')) ? deny(denyReasons.browseOnly, state) : allow;
+}
+
+export function guardDecision(mode: AgentMode, tool: string, args: unknown, state: GuardState, context: GuardContext): GuardDecision {
   const { uploadDir } = context;
   const input = (typeof args === 'object' && args !== null && !Array.isArray(args) ? args : {}) as Record<string, unknown>;
+  if (mode === 'browse') return browseDecision(tool, input, state, context);
   // press_key is not in the allowed list at all; Enter gets its own explanation.
   if (tool === `${playwright}browser_press_key` && /enter/i.test(String(input.key))) return deny(denyReasons.enter, state);
   if (!allowedTools.includes(tool)) return deny(denyReasons.notAllowed, state);

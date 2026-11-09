@@ -8,7 +8,10 @@ import type { RemoteBrowserEnd, RemoteBrowserPort } from '../plugins/remote-brow
 import { cronCalendar } from '../plugins/cron.js';
 import { createPrismaClient } from '../plugins/database.js';
 import type { InlineKeyboard, TelegramClient, TelegramUpdate } from '../plugins/telegram.js';
-import { browserLabel, browserOpenedMessage, externalMessageMax, fieldValueMax, manualMessage, menuCommands, parseCallback, parseCommand, parseOptions, readyMessage, submittedMessage } from '../scripts/bot-commands.js';
+import {
+  browserLabel, browserOpenedMessage, externalMessageMax, fieldValueMax, helpText, manualMessage, menuCommands, parseCallback, parseCommand, parseOptions,
+  progressText, readyMessage, submittedMessage,
+} from '../scripts/bot-commands.js';
 import { Scheduler, shouldReport, TelegramBot } from '../scripts/bot-runtime.js';
 import type { BotOwner, BotServices, TaskOutcome, Timer } from '../scripts/bot-runtime.js';
 import type { PipelineOutput } from '../scripts/pipeline-tasks.js';
@@ -19,6 +22,7 @@ import { ScheduleRepository } from '../src/schedules/ScheduleRepository.js';
 import { ScheduleService } from '../src/schedules/ScheduleService.js';
 import type { Schedule } from '../src/schedules/ScheduleService.js';
 import type { ScoringOptions, ScoringReport } from '../src/scoring/ScoringService.js';
+import type { HuntReport, HuntResult } from '../src/searches/HuntService.js';
 import type { Search, SearchRunReport } from '../src/searches/SearchService.js';
 import { createTestDatabase } from './auth-fixture.js';
 import { agentAnswer, createTestApplier, FakeAgent, FakeApplyTracker, linkedinUrl } from './apply-fixture.js';
@@ -71,6 +75,28 @@ describe('bot commands', () => {
     expect(parseCommand('/search')).toMatchObject({ kind: 'invalid', message: expect.stringMatching(/^Формат: \/search/) });
     expect(parseCommand('/search | Remote')).toMatchObject({ kind: 'invalid' });
     expect(parseCommand('/search node | Dublin | Cork')).toMatchObject({ kind: 'invalid', message: expect.stringMatching(/Две локации/) });
+  });
+
+  it('parses /search @site: an agent search on another board, no Easy Apply', () => {
+    expect(parseCommand('/search @indeed node.js | Ireland | +node | -java')).toEqual({
+      kind: 'addSearch',
+      search: { source: 'agent', site: 'indeed', keywords: 'node.js', location: 'Ireland', includeTitle: ['node'], excludeTitle: ['java'] },
+    });
+    expect(parseCommand('/search @https://jobs.example.test/search?q={q} backend')).toEqual({
+      kind: 'addSearch', search: { source: 'agent', site: 'https://jobs.example.test/search?q={q}', keywords: 'backend', includeTitle: [], excludeTitle: [] },
+    });
+    expect(parseCommand('/search @djinni')).toMatchObject({ kind: 'invalid', message: expect.stringMatching(/^Формат: \/search/) });
+    expect(parseCommand('/search node.js | Remote')).toMatchObject({ search: { source: 'linkedin' } });
+  });
+
+  it('runs and schedules hunt like the other tasks', () => {
+    expect(parseCommand('/hunt')).toEqual({ kind: 'run', task: 'hunt', options: {} });
+    expect(parseCommand('/hunt limit=3 max=20')).toEqual({ kind: 'run', task: 'hunt', options: { limit: 3, maxMinutes: 20 } });
+    expect(parseCommand('/run hunt threshold=80')).toEqual({ kind: 'run', task: 'hunt', options: { threshold: 80 } });
+    expect(parseCommand('/schedule hunt 0 8 * * * limit=5')).toEqual({ kind: 'schedule', task: 'hunt', cron: '0 8 * * *', options: { limit: 5 } });
+    expect(parseCommand('/on hunt')).toEqual({ kind: 'toggle', task: 'hunt', enabled: true });
+    expect(menuCommands.map((item) => item.command)).toContain('hunt');
+    expect(helpText).toContain('/search @indeed … и /hunt — другие биржи через агента');
   });
 
   it('parses button data', () => {
@@ -217,6 +243,12 @@ const searchReport = (overrides: Partial<SearchRunReport> = {}): SearchRunReport
   pages: 2, seen: 40, fresh: 10, filtered: 3, created: 10, duplicates: 0, invalid: 0, stopped: 'known', ...overrides,
 });
 
+const huntReport = (overrides: Partial<HuntReport> = {}): HuntReport => ({
+  searchId: 'h1', ownerId: 'u1', source: 'indeed', site: 'indeed', query: { keywords: 'node.js' },
+  pages: 1, seen: 20, fresh: 8, filtered: 3, created: 8, duplicates: 0, invalid: 0, stopped: 'end',
+  described: 5, costMicros: 400_000, durationMs: 180_000, blocked: null, skipped: false, ...overrides,
+});
+
 const scoringReport = (overrides: Partial<ScoringReport> = {}): ScoringReport => ({
   model: 'qwen', threshold: 70, dryRun: false, profile: { revision: 3, fromCache: false },
   counts: { queued: 2, rejected: 5, skipped: 1, changed: 0, errors: 0 },
@@ -271,6 +303,8 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
   let collectSignals: AbortSignal[];
   let scoreCalls: { ownerId: string; options: ScoringOptions }[];
   let searches: Search[];
+  let huntCalls: { ownerId: string | undefined; limit: number | undefined; dryRun: boolean | undefined }[];
+  let huntResult: HuntResult;
   let answers: Answer[];
   let trackerConfigured: boolean;
   let applyTracker: FakeApplyTracker;
@@ -309,9 +343,11 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     scoreCalls = [];
     trackerConfigured = true;
     searches = [{
-      id: 'search-1', source: 'linkedin', keywords: 'node.js', location: 'Ireland', includeTitle: [], excludeTitle: ['java'],
+      id: 'search-1', source: 'linkedin', site: null, keywords: 'node.js', location: 'Ireland', includeTitle: [], excludeTitle: ['java'],
       easyApplyOnly: true, enabled: true, createdAt: '', updatedAt: '',
     }];
+    huntCalls = [];
+    huntResult = { reports: [huntReport()], spentTodayMicros: 400_000, budgetMicros: 5_000_000 };
     answers = [];
     schedules = new ScheduleService(new ScheduleRepository(database), cronCalendar, { now: () => now }, { timezone: 'Europe/Dublin' });
 
@@ -353,7 +389,7 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
         list: async () => searches,
         create: async (_actor, input) => {
           const created: Search = {
-            id: `search-${searches.length + 1}`, source: input.source, keywords: input.keywords, location: input.location ?? null,
+            id: `search-${searches.length + 1}`, source: input.source, site: input.site ?? null, keywords: input.keywords, location: input.location ?? null,
             includeTitle: [...input.includeTitle ?? []], excludeTitle: [...input.excludeTitle ?? []],
             easyApplyOnly: input.easyApplyOnly ?? false, enabled: true, createdAt: '', updatedAt: '',
           };
@@ -391,6 +427,17 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
             runAdHoc: async () => { throw new Error('not used'); },
           },
           pingBrowser: async () => ({}),
+          close: async () => {},
+        }),
+        openHunter: (log) => ({
+          hunt: {
+            runSaved: async (options) => {
+              huntCalls.push({ ownerId: options.ownerId, limit: options.limit, dryRun: options.dryRun });
+              log?.info('indeed «node.js»: агент копирует описания 5 вакансий');
+              return huntResult;
+            },
+            runAdHoc: async () => { throw new Error('not used'); },
+          },
           close: async () => {},
         }),
         openScorer: () => ({
@@ -511,6 +558,48 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     expect(telegram.texts().at(-1)).toContain('сбор: пропущен — браузер занят: collect');
   });
 
+  it('/run hunt: the agent collects with the description limit, then scores and sends; the report has every search', async () => {
+    huntResult = {
+      reports: [
+        huntReport(),
+        huntReport({ searchId: 'h2', source: 'djinni', site: 'djinni', seen: 3, fresh: 0, filtered: 0, created: 0, described: 0, stopped: 'error', blocked: 'Cloudflare на выдаче', error: 'нужна капча/вход — Cloudflare на выдаче', costMicros: 50_000, durationMs: 40_000 }),
+        huntReport({ searchId: 'h3', source: 'djinni', site: 'djinni', query: { keywords: 'typescript' }, skipped: true, stopped: 'error', blocked: 'Cloudflare на выдаче', costMicros: 0 }),
+      ],
+      spentTodayMicros: 450_000, budgetMicros: 5_000_000,
+    };
+    await say('/hunt limit=5 threshold=80');
+    await bot.settled();
+    expect(huntCalls).toEqual([{ ownerId: owner.id, limit: 5, dryRun: false }]);
+    // limit belongs to the agent, not to scoring.
+    expect(scoreCalls).toEqual([{ ownerId: owner.id, options: expect.objectContaining({ threshold: 80, dryRun: false, push: true }) }]);
+    expect(scoreCalls[0]!.options).not.toHaveProperty('limit');
+    const report = telegram.texts().at(-1)!;
+    expect(report).toMatch(/^⚠️ <b>hunt<\/b> вручную/);
+    expect(report).toContain('indeed «node.js»: карточек 20, новых 8, с описанием 5, отсеяно по названию 3, 3 мин, $0.40; записано 8');
+    expect(report).toContain('djinni «node.js»: нужна капча/вход — пропущено (Cloudflare на выдаче), &lt;1 мин, $0.05');
+    expect(report).toContain('djinni: нужна капча/вход — пропущено');
+    expect(report).toContain('сбор через агента: поисков 3');
+    expect(report).toContain('отбор: queued 2');
+    expect((await schedules.recentRuns(owner))[0]).toMatchObject({ task: 'hunt', status: 'error' });
+  });
+
+  it('hunt needs the browser for the whole run: a busy browser means «занято», no agent run', async () => {
+    writeFileSync(lockPath, JSON.stringify({ task: 'apply', pid: process.pid, startedAt: '2026-11-04T09:55:00.000Z' }));
+    await say('/run hunt');
+    await bot.settled();
+    expect(telegram.texts().at(-1)).toMatch(/занято: браузер — apply \(pid \d+\), запущено 5 мин назад/);
+    expect(huntCalls).toEqual([]);
+    expect(scoreCalls).toEqual([]);
+  });
+
+  it('/status names the agent stage', () => {
+    const text = progressText({
+      task: 'hunt', startedAt: new Date('2026-11-04T09:58:00Z'), stage: 'hunt', stageStartedAt: new Date('2026-11-04T09:58:00Z'),
+      collectLine: 'indeed «node.js»: карточек 20, новых 8', scored: 0, queued: 0, lastScored: null,
+    }, new Date('2026-11-04T10:00:00Z'));
+    expect(text).toBe('hunt, запущено 2 мин назад, этап: сбор через агента (2 мин)\n  indeed «node.js»: карточек 20, новых 8');
+  });
+
   it('reports an error when Job-Tracker is not configured', async () => {
     trackerConfigured = false;
     await say('/run score');
@@ -584,6 +673,9 @@ describe('Telegram bot on fake Telegram and fake pipeline', () => {
     expect(list.text).toContain('2. ✅ linkedin «typescript» (Remote)');
     const remove = list.keyboard![1]![1]!;
     expect(remove.text).toBe('🗑 2. удалить');
+    await say('/search @djinni node.js | +node');
+    expect(telegram.texts().at(-1)).toMatch(/^Поиск добавлен: ✅ @djinni «node\.js» \+node\nСобрать через агента, оценить и отправить: \/hunt/);
+    searches = searches.slice(0, 2);
     await bot.handleUpdate({ update_id: 600, callback_query: { id: 'q5', data: remove.data!, message: { message_id: 9, chat: { id: chatId } } } });
     expect(searches.map((search) => search.keywords)).toEqual(['node.js']);
     expect(telegram.sent.at(-2)).toMatchObject({ method: 'editMessageText', text: expect.not.stringContaining('typescript') });

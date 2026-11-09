@@ -3,6 +3,7 @@ import { ApplicationError } from '../../framework/core/errors.js';
 import type { Clock } from '../../framework/core/runtime.js';
 import type { JobCollectorApi } from '../jobs/JobTypes.js';
 import type { SearchRepository } from './SearchRepository.js';
+import { agentSiteTitle, agentSourceId } from './AgentSites.js';
 import { canonicalCards, errorMessage, pageDelay, searchFields, searchQuery, titleRejection } from './SearchRules.js';
 import type { SearchFieldsInput, SearchStopReason, TitleFilter } from './SearchRules.js';
 import { BrowserUnavailableError, SourceStopError } from './SearchTypes.js';
@@ -13,7 +14,10 @@ export type { SearchStopReason } from './SearchRules.js';
 
 export type Search = Readonly<{
   id: string;
+  /** A source module id, or `agent`: the collector agent browses `site` (task hunt). */
   source: string;
+  /** Agent searches only: a known site id (indeed, djinni…) or an https address; null otherwise. */
+  site: string | null;
   keywords: string;
   location: string | null;
   /** At least one of these words must be in a job title; empty means any title. */
@@ -48,9 +52,11 @@ export type SearchRunCounts = {
   invalid: number;
 };
 
-/** A stored run of a saved search. */
+/** A stored run of a saved search; `described` and `costMicros` are counted by agent runs only. */
 export type SearchRun = Readonly<SearchRunCounts & {
   id: string;
+  described: number;
+  costMicros: number;
   stopped: SearchStopReason;
   error: string | null;
   startedAt: string;
@@ -58,6 +64,7 @@ export type SearchRun = Readonly<SearchRunCounts & {
 }>;
 export type NewSearchRun = Readonly<SearchRunCounts & {
   searchId: string; stopped: SearchStopReason; error: string | null; startedAt: Date; finishedAt: Date;
+  described?: number; costMicros?: number;
 }>;
 
 /** What one run of one search did; `searchId` is null for an ad hoc search that is not saved. */
@@ -125,7 +132,7 @@ export class SearchService {
   // ── Owner's actions over HTTP ──
 
   sources(): { id: string; title: string }[] {
-    return this.registry.map((source) => ({ id: source.id, title: source.title }));
+    return [...this.registry.map((source) => ({ id: source.id, title: source.title })), { id: agentSourceId, title: agentSiteTitle }];
   }
 
   list(actor: Actor): Promise<Search[]> {
@@ -140,6 +147,7 @@ export class SearchService {
     const search = await this.owned(actor.id, id);
     const fields = searchFields({
       source: search.source,
+      site: search.site,
       keywords: change.keywords ?? search.keywords,
       location: change.location === undefined ? search.location : change.location,
       includeTitle: change.includeTitle ?? search.includeTitle,
@@ -170,11 +178,13 @@ export class SearchService {
    * Runs the enabled saved searches (of one owner, or of everyone) one after another and stores
    * each report. A failing site is reported and the rest continue; a dry run stores nothing.
    * `easyApplyOnly` narrows every search of this run to Easy Apply jobs without changing the saved searches.
+   * Agent searches (`source: agent`) are not run here: they belong to the hunt task (HuntService).
    */
   async runSaved(options: SearchRunOptions & Readonly<{ ownerId?: string; easyApplyOnly?: boolean }>): Promise<SearchRunReport[]> {
     const reports: SearchRunReport[] = [];
     const stoppedSources = new Map<string, string>();
-    for (const search of await this.searches.listEnabled(options.ownerId)) {
+    const saved = (await this.searches.listEnabled(options.ownerId)).filter((search) => search.source !== agentSourceId);
+    for (const search of saved) {
       if (options.signal.aborted) break;
       const source = this.registry.find((candidate) => candidate.id === search.source);
       const query = searchQuery({ ...search, easyApplyOnly: search.easyApplyOnly || (options.easyApplyOnly ?? false) });
@@ -208,7 +218,8 @@ export class SearchService {
   /** One search that is not saved: for trying a new source module. Nothing is recorded about the run itself. */
   async runAdHoc(ownerId: string, input: SearchFieldsInput, options: SearchRunOptions): Promise<SearchRunReport> {
     const fields = searchFields(input, this.registry);
-    const source = this.registry.find((candidate) => candidate.id === fields.source)!;
+    const source = this.registry.find((candidate) => candidate.id === fields.source);
+    if (!source) throw new ApplicationError('UNKNOWN_SEARCH_SOURCE', 'Поиск через агента запускается задачей hunt (npm run hunt).', 400);
     const filter = { includeTitle: fields.includeTitle, excludeTitle: fields.excludeTitle };
     return (await this.runTask({ searchId: null, ownerId, source, query: searchQuery(fields), filter }, options)).report;
   }

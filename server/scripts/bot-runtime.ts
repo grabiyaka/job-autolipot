@@ -11,6 +11,7 @@ import type { JobService } from '../src/jobs/JobService.js';
 import { DEFAULT_TASK_MINUTES, taskOptions } from '../src/schedules/ScheduleService.js';
 import type { PipelineTask, Schedule, ScheduleService, TaskOptions, TaskRunStatus, TaskTrigger } from '../src/schedules/ScheduleService.js';
 import type { ScoringLine } from '../src/scoring/ScoringService.js';
+import { agentSourceId } from '../src/searches/AgentSites.js';
 import type { SearchService } from '../src/searches/SearchService.js';
 import type { Logger } from '../src/searches/SearchTypes.js';
 import {
@@ -18,10 +19,10 @@ import {
   searchLine, statusText,
 } from './bot-commands.js';
 import type { ApplicationAction, BotCommand, TaskProgress } from './bot-commands.js';
-import { cycleSummaryLines, queuedCount, scoringProblems, scoringSummaryLines, searchReportLines } from './pipeline-cli.js';
+import { cycleSummaryLines, huntSummaryLines, queuedCount, scoringProblems, scoringSummaryLines, searchReportLines } from './pipeline-cli.js';
 import type { CycleScore, CycleStage, StopWording } from './pipeline-cli.js';
-import { collectJobs, runCycle, scoreOwners } from './pipeline-tasks.js';
-import type { CollectorPort, PipelineOutput, ScorerPort } from './pipeline-tasks.js';
+import { collectJobs, runCycle, runHunt, scoreOwners } from './pipeline-tasks.js';
+import type { CollectorPort, HunterPort, PipelineOutput, ScorerPort } from './pipeline-tasks.js';
 
 /**
  * The bot process without its entry point: one task at a time, the schedule timer and the command
@@ -44,6 +45,8 @@ export type PipelinePorts = Readonly<{
   lockBrowser(task: string): BrowserLock;
   /** `log` gets the collector's page lines (the bot keeps the last one for /status). */
   openCollector(log?: Logger): CollectorPort;
+  /** The agent collector of hunt; `log` gets its progress lines like the collector's. */
+  openHunter(log?: Logger): HunterPort;
   openScorer(): ScorerPort & Readonly<{ close(): Promise<void> }>;
 }>;
 
@@ -155,9 +158,10 @@ export class TaskRunner {
     const busy = this.busyText();
     if (busy) return this.busy(task, trigger, scheduleId, busy);
 
-    // Collecting alone needs the browser; a cycle takes the lock itself and only skips collecting when it is busy.
+    // Collecting and hunting need the browser for the whole run; a cycle takes the lock itself and only skips
+    // collecting when it is busy.
     let lock: BrowserLock | null = null;
-    if (task === 'collect') {
+    if (task === 'collect' || task === 'hunt') {
       try { lock = this.services.pipeline.lockBrowser(task); } catch (error) {
         if (!(error instanceof BrowserBusyError)) throw error;
         const { holder } = error;
@@ -282,6 +286,22 @@ export class TaskRunner {
             ...scoringSummaryLines(report, true, botStopWording).map((line) => line.trim())])
           : run.result.skippedOwners.map((owner) => `пропущен: ${owner.reason}`);
         return { status: finalStatus(run.failed), lines, queued: queuedCount(stage), problems: run.failed || scoringProblems(stage) > 0 || pushFailed(stage) };
+      }
+
+      if (task === 'hunt') {
+        // limit is the number of descriptions per search here, not a scoring limit.
+        const { limit: _limit, ...score } = scoreInput;
+        const result = await runHunt({
+          owner: this.owner, adHoc: null, skipScore: false, score, signal, stopped, trackerConfigured: pipeline.trackerConfigured,
+          ...(options.limit !== undefined ? { limit: options.limit } : {}),
+          openHunter: () => pipeline.openHunter(log), scorer, activeUsers: async () => [this.owner],
+        }, out, botStopWording);
+        return {
+          status: finalStatus(result.failed),
+          lines: huntSummaryLines(result.hunt, result.score, botStopWording),
+          queued: queuedCount(result.score),
+          problems: result.failed || scoringProblems(result.score) > 0 || pushFailed(result.score),
+        };
       }
 
       const result = await runCycle({
@@ -573,7 +593,10 @@ export class TelegramBot {
       }
       case 'addSearch': {
         const search = await searches.create(this.owner, command.search);
-        return this.say(`Поиск добавлен: ✅ ${searchLine(search)}\nСобрать сейчас: /run collect · сбор и оценка: /run cycle · список: /searches`);
+        const next = search.source === agentSourceId
+          ? 'Собрать через агента, оценить и отправить: /hunt · список: /searches'
+          : 'Собрать сейчас: /run collect · сбор и оценка: /run cycle · список: /searches';
+        return this.say(`Поиск добавлен: ✅ ${searchLine(search)}\n${next}`);
       }
       case 'queued': {
         const page = await jobs.list(this.owner, { status: 'queued', sort: 'score', limit: 10 });

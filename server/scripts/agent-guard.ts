@@ -8,9 +8,10 @@ import type { RefIndex } from '../plugins/agent-snapshot-refs.js';
 /**
  * PreToolUse and PostToolUse hook of the browser agent (the event comes in `hook_event_name`) (wired by plugins/claude-agent.ts into the agent's
  * .claude/settings.json). Input: the tool call as JSON on stdin. Environment:
- * APPLY_MODE=fill|submit|submit_fresh (anything else counts as fill), APPLY_GUARD_DIR, the folder of
+ * APPLY_MODE=fill|submit|submit_fresh|browse (anything else counts as fill), APPLY_GUARD_DIR, the folder of
  * this attempt, APPLY_UPLOAD_DIR, the only folder uploads may come from (without it every upload is
- * denied), and APPLY_START_URL, whose https host the browser may open (optional).
+ * denied), APPLY_START_URL, whose https host the browser may open (optional), and APPLY_ALLOWED_HOSTS,
+ * the comma-separated hosts of a browse run (the collector agent: nothing else may be opened).
  *
  * Writes one JSON line per call to $APPLY_GUARD_DIR/guard-log.jsonl. The one allowed submit click is
  * claimed by creating $APPLY_GUARD_DIR/submit-click exclusively, so parallel calls cannot both pass.
@@ -140,6 +141,7 @@ function main(): void {
       page: index.page,
       startHost: httpsHost(process.env.APPLY_START_URL?.trim()),
       visitedHosts: index.hosts,
+      allowedHosts: (process.env.APPLY_ALLOWED_HOSTS ?? '').split(',').map((host) => host.trim().toLowerCase()).filter(Boolean),
     };
     const state: GuardState = {
       submitClicks: existsSync(path.join(dir, submitMarker)) ? 1 : initialGuardState.submitClicks,

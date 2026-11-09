@@ -1,3 +1,5 @@
+import { agentSiteLabel, agentSourceId } from '../src/searches/AgentSites.js';
+import type { HuntReport } from '../src/searches/HuntService.js';
 import type { SearchFieldsInput } from '../src/searches/SearchRules.js';
 import type { SearchRunReport, SearchStopReason } from '../src/searches/SearchService.js';
 import type { ScoringLine, ScoringReport } from '../src/scoring/ScoringService.js';
@@ -19,6 +21,14 @@ export const collectOptions = {
 export const scoreOptions = {
   user: { type: 'string' }, limit: { type: 'string' }, 'dry-run': { type: 'boolean' }, model: { type: 'string' },
   threshold: { type: 'string' }, 'no-push': { type: 'boolean' }, help: { type: 'boolean' },
+} as const;
+
+/** npm run hunt: `limit` is the number of descriptions per search, not a scoring limit. */
+export const huntOptions = {
+  user: { type: 'string' }, site: { type: 'string' }, query: { type: 'string' }, location: { type: 'string' },
+  include: { type: 'string' }, exclude: { type: 'string' }, limit: { type: 'string' }, 'dry-run': { type: 'boolean' },
+  'no-push': { type: 'boolean' }, 'skip-score': { type: 'boolean' }, threshold: { type: 'string' }, model: { type: 'string' },
+  'max-minutes': { type: 'string', default: '60' }, help: { type: 'boolean' },
 } as const;
 
 type Raw = string | undefined;
@@ -46,6 +56,26 @@ export function adHocSearch(values: CollectValues): SearchFieldsInput | null {
     includeTitle: words(values.include), excludeTitle: words(values.exclude),
     ...(values['easy-apply'] ? { easyApplyOnly: true } : {}),
   };
+}
+
+export type HuntValues = Readonly<{
+  user?: Raw; site?: Raw; query?: Raw; location?: Raw; include?: Raw; exclude?: Raw;
+}>;
+
+/** An ad hoc agent search when any search flag is given; null — the saved agent searches. */
+export function adHocHunt(values: HuntValues): SearchFieldsInput | null {
+  const adHoc = [values.site, values.query, values.location, values.include, values.exclude].some((value) => value !== undefined);
+  if (!adHoc) return null;
+  if (!values.user || !values.site || !values.query) throw new Error('Для разового поиска укажите --user, --site и --query.');
+  return {
+    source: agentSourceId, site: values.site, keywords: values.query, location: values.location ?? null,
+    includeTitle: words(values.include), excludeTitle: words(values.exclude),
+  };
+}
+
+/** --limit of hunt: descriptions per search, 1–50. */
+export function huntLimit(raw: Raw): number | undefined {
+  return integer('--limit', raw, { min: 1, max: 50 });
 }
 
 export function maxMinutes(raw: Raw): number {
@@ -104,6 +134,54 @@ export function searchReportLines(report: SearchRunReport, dryRun: boolean, word
       + `из них отсеяно по названию ${report.filtered}; ${saved}, некорректных ${report.invalid}`,
     `  остановка: ${stopReason(report.stopped, wording)}${report.error ? ` — ${report.error}` : ''}`,
   ];
+}
+
+// ── Hunt report ──
+
+/** «$0.40»: list-price USD of the agent (notional on a subscription). */
+export const dollars = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}`;
+const duration = (ms: number): string => (ms < 60_000 ? '<1 мин' : `${Math.round(ms / 60_000)} мин`);
+
+/**
+ * One line per agent search: «indeed «node.js»: карточек 20, новых 8, с описанием 8, отсеяно по названию 3, 3 мин, $0.40»;
+ * a blocked site: «indeed: нужна капча/вход — пропущено».
+ */
+export function huntReportLine(report: HuntReport, dryRun: boolean, wording: StopWording = cliStopWording): string {
+  const site = agentSiteLabel(report.site);
+  const name = `${site} «${report.query.keywords}»${report.query.location ? ` (${report.query.location})` : ''}`;
+  if (report.skipped) return report.blocked !== null ? `${site}: нужна капча/вход — пропущено` : `${name}: пропущен — ${report.error}`;
+  const tail = `${duration(report.durationMs)}, ${dollars(report.costMicros)}`;
+  if (report.blocked !== null) return `${name}: нужна капча/вход — пропущено (${report.blocked}), ${tail}`;
+  const counts = [
+    `карточек ${report.seen}`, `новых ${report.fresh}`, `с описанием ${report.described}`, `отсеяно по названию ${report.filtered}`,
+    ...(report.invalid ? [`некорректных ${report.invalid}`] : []),
+  ];
+  const saved = dryRun ? 'не записано (--dry-run)' : `записано ${report.created}${report.duplicates ? `, дублей ${report.duplicates}` : ''}`;
+  const stop = report.stopped === 'limit' ? '; остальные новые — в следующий прогон (limit)'
+    : report.stopped === 'aborted' ? `; ${wording.collect}`
+      : report.stopped === 'error' ? `; ошибка — ${report.error}` : '';
+  return `${name}: ${counts.join(', ')}, ${tail}; ${saved}${stop}`;
+}
+
+/** The agent stage of hunt. */
+export type HuntCollect = Readonly<{ reports: readonly HuntReport[]; dryRun: boolean; spentTodayMicros: number; budgetMicros: number }>;
+
+function huntSummary(stage: CycleStage<HuntCollect>): string {
+  if (!stage.ran) return `сбор через агента: не выполнялся — ${stage.reason}`;
+  const { reports, dryRun, spentTodayMicros, budgetMicros } = stage.result;
+  if (!reports.length) return 'сбор через агента: включённых поисков через агента нет (/search @indeed …)';
+  const saved = dryRun ? 'не записано (--dry-run)' : `записано ${sum(reports, (report) => report.created)}`;
+  return `сбор через агента: поисков ${reports.length}, новых ${sum(reports, (report) => report.fresh)}, `
+    + `с описанием ${sum(reports, (report) => report.described)}, ${saved}; `
+    + `затраты ${dollars(sum(reports, (report) => report.costMicros))}, за сегодня ${dollars(spentTodayMicros)} из ${dollars(budgetMicros)}`;
+}
+
+/** The end of a hunt: every search, the agent's total, scoring and Job-Tracker. */
+export function huntSummaryLines(
+  hunt: CycleStage<HuntCollect>, score: CycleStage<CycleScore>, wording: StopWording = cliStopWording,
+): string[] {
+  const searches = hunt.ran ? hunt.result.reports.map((report) => huntReportLine(report, hunt.result.dryRun, wording)) : [];
+  return ['Итог hunt:', ...[...searches, huntSummary(hunt), ...scoreSummary(score, wording), trackerSummary(score)].map((line) => `  ${line}`)];
 }
 
 // ── Scoring report ──

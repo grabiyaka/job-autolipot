@@ -21,6 +21,9 @@ costMicros, guardLog, runDir }`. Настройки из `.env` даёт `claude
   формы: агент заново открывает форму, заполняет её и отправляет ровно один раз. Все запреты `fill`
   в `submit_fresh` действуют, кроме одного разрешённого клика отправки за попытку. В этом же режиме идёт
   заполнение с `APPLY_AUTO_SUBMIT=true` ([applications.md](applications.md#автоотправка-apply_auto_submittrue)).
+  Четвёртый режим (`AgentMode`) — `browse`, только чтение для агента сбора `hunt` ([hunt.md](hunt.md#защита-режим-browse-хука)):
+  свой список инструментов, хосты сайта в `allowedHosts` → `APPLY_ALLOWED_HOSTS`, `maxTurns` → `--max-turns`,
+  копии файлов для загрузки не делаются и `APPLY_UPLOAD_DIR` не передаётся.
 - **`startUrl`** — https-адрес, с которого агент начинает (вакансия не с LinkedIn или внешняя форма
   для `submit_fresh`). Плагин передаёт его хуку в `APPLY_START_URL`, и хост этого адреса разрешён
   для переходов. В промпт адрес кладёт вызывающий. Не https — `run` бросает ошибку до запуска.
@@ -84,7 +87,7 @@ costMicros, guardLog, runDir }`. Настройки из `.env` даёт `claude
 состояние `state` — `{ submitClicks, inputPages }`. Хук
 вызывается `claude` перед каждым инструментом (PreToolUse) и после каждого инструмента Playwright
 (PostToolUse); событие он узнаёт из `hook_event_name`. Вызов приходит JSON-ом на stdin, режим —
-из `APPLY_MODE` (`fill` | `submit` | `submit_fresh`), а пустой или неизвестный режим считается `fill`.
+из `APPLY_MODE` (`fill` | `submit` | `submit_fresh` | `browse`), а пустой или неизвестный режим считается `fill`.
 Каждый вызов и решение хук пишет строкой в `guard-log.jsonl` (с текущей страницей `page`);
 этот лог плагин возвращает как `guardLog`.
 

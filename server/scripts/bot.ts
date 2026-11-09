@@ -1,7 +1,10 @@
 import '../plugins/environment.js';
 import { createBot } from '../framework/composition/create-bot.js';
 import { defaultBrokerSocket } from '../plugins/browser-broker.js';
-import { applySettingsFromEnv, claudeAgentConfigFromEnv, jobTrackerConfigFromEnv, ollamaConfigFromEnv, remoteBrowserSettingsFromEnv } from '../plugins/environment.js';
+import {
+  applySettingsFromEnv, claudeAgentConfigFromEnv, huntAgentConfigFromEnv, huntSettingsFromEnv, jobTrackerConfigFromEnv, ollamaConfigFromEnv,
+  remoteBrowserSettingsFromEnv,
+} from '../plugins/environment.js';
 import { pause } from '../plugins/http.js';
 import { createTelegramClient } from '../plugins/telegram.js';
 import { DEFAULT_SCHEDULE_TIMEZONE } from '../src/schedules/ScheduleService.js';
@@ -11,7 +14,7 @@ import { consoleOutput } from './pipeline-tasks.js';
 
 /**
  * Telegram bot of job-autopilot: one long-lived process (npm run bot, under systemd). It answers only
- * TELEGRAM_CHAT_ID, runs collect / score / cycle / apply in process and keeps the schedules.
+ * TELEGRAM_CHAT_ID, runs collect / score / cycle / hunt / apply in process and keeps the schedules.
  */
 
 function settingsFromEnv() {
@@ -44,6 +47,8 @@ async function main(): Promise<void> {
     agentConfig: () => claudeAgentConfigFromEnv(),
     apply: applySettingsFromEnv(),
     remoteBrowser: remoteBrowserSettingsFromEnv(),
+    huntAgentConfig: () => huntAgentConfigFromEnv(),
+    hunt: huntSettingsFromEnv(),
   });
   const shutdown = new AbortController();
   try {

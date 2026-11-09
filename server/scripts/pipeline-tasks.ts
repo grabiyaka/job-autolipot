@@ -3,20 +3,21 @@ import type { BrowserLock } from '../plugins/browser-lock.js';
 import type { ScoringLine, ScoringReport, ScoringService } from '../src/scoring/ScoringService.js';
 import type { SearchFieldsInput } from '../src/searches/SearchRules.js';
 import type { SearchRunReport, SearchService } from '../src/searches/SearchService.js';
+import type { HuntResult, HuntService } from '../src/searches/HuntService.js';
 import { BrowserError } from '../src/searches/SearchTypes.js';
-import { profileSkip, scoringLine, scoringSummaryLines, searchReportLines } from './pipeline-cli.js';
-import type { CycleCollect, CycleScore, CycleStage, StopWording } from './pipeline-cli.js';
+import { huntReportLine, profileSkip, scoringLine, scoringSummaryLines, searchReportLines } from './pipeline-cli.js';
+import type { CycleCollect, CycleScore, CycleStage, HuntCollect, StopWording } from './pipeline-cli.js';
 import { cliStopWording } from './pipeline-cli.js';
 
 /**
- * The collect, score and cycle runs shared by the CLI scripts and the Telegram bot. They print through
+ * The collect, score, cycle and hunt runs shared by the CLI scripts and the Telegram bot. They print through
  * `out` (the CLI passes console, the bot its log) and return structured results; the caller decides the
  * exit code or the report. Only the narrow parts of the composition handles are used, so tests pass fakes.
  */
 
 /** Where a run is now, for a caller that shows progress (the bot's /status); the CLI does not listen. */
 export type PipelineStep =
-  | Readonly<{ kind: 'stage'; stage: 'collect' | 'score' }>
+  | Readonly<{ kind: 'stage'; stage: 'collect' | 'hunt' | 'score' }>
   | Readonly<{ kind: 'scored'; line: ScoringLine }>;
 
 export type PipelineOutput = Readonly<{ line(text: string): void; warn(text: string): void; step?(step: PipelineStep): void }>;
@@ -178,23 +179,68 @@ export async function runCycle(input: CycleInput, out: PipelineOutput, wording: 
   }
 
   // ── 2. Отбор и 3. отправка в Job-Tracker (внутри scoreFound) ──
+  const scored = await scoreStage(input, out, wording);
+  return { collect, score: scored.score, failed: failed || scored.failed };
+}
+
+type ScoreStageInput = Pick<CycleInput, 'owner' | 'score' | 'signal' | 'stopped' | 'trackerConfigured' | 'scorer' | 'activeUsers'>;
+
+/** Scoring and sending after a collecting stage: skipped after a stop, fails without Job-Tracker. */
+async function scoreStage(input: ScoreStageInput, out: PipelineOutput, wording: StopWording): Promise<{ score: CycleStage<CycleScore>; failed: boolean }> {
   out.line('\n== Отбор ==');
   out.step?.({ kind: 'stage', stage: 'score' });
-  let score: CycleStage<CycleScore>;
   const stopReason = input.stopped();
-  if (stopReason) {
-    score = { ran: false, reason: stopReason };
-  } else if (!input.trackerConfigured) {
+  if (stopReason) return { score: { ran: false, reason: stopReason }, failed: false };
+  if (!input.trackerConfigured) {
     out.line('Job-Tracker не настроен: задайте JOB_TRACKER_URL и JOB_TRACKER_TOKEN в .env — профиль для оценки берётся оттуда.');
-    score = { ran: false, reason: 'Job-Tracker не настроен (JOB_TRACKER_URL, JOB_TRACKER_TOKEN)' };
-    failed = true;
-  } else {
-    const owners = owner ? [owner] : await input.activeUsers();
-    const scored = await scoreOwners(input.scorer, owners, {
-      ...input.score, signal, namedOwner: owner !== null, announceEmpty: true,
-    }, out, wording);
-    if (scored.failed) failed = true;
-    score = { ran: true, result: scored.result };
+    return { score: { ran: false, reason: 'Job-Tracker не настроен (JOB_TRACKER_URL, JOB_TRACKER_TOKEN)' }, failed: true };
   }
-  return { collect, score, failed };
+  const owners = input.owner ? [input.owner] : await input.activeUsers();
+  const scored = await scoreOwners(input.scorer, owners, {
+    ...input.score, signal: input.signal, namedOwner: input.owner !== null, announceEmpty: true,
+  }, out, wording);
+  return { score: { ran: true, result: scored.result }, failed: scored.failed };
+}
+
+export type HunterPort = Readonly<{ hunt: Pick<HuntService, 'runSaved' | 'runAdHoc'>; close(): Promise<void> }>;
+
+export type HuntInput = ScoreStageInput & Readonly<{
+  /** An ad hoc agent search (`source: agent` with a site) instead of the saved ones; needs `owner`. */
+  adHoc: SearchFieldsInput | null;
+  /** Descriptions per search (default 10). */
+  limit?: number;
+  /** Only the agent stage: no scoring and no sending. */
+  skipScore: boolean;
+  /** The browser lock is the caller's: it is held for the whole hunt. */
+  openHunter(): HunterPort;
+}>;
+
+export type HuntRunResult = Readonly<{ hunt: CycleStage<HuntCollect>; score: CycleStage<CycleScore>; failed: boolean }>;
+
+/**
+ * Hunt: the browser agent collects from other job boards (saved `agent` searches), then the new `found`
+ * jobs are scored and sent like in cycle. The caller holds the browser lock for the whole run.
+ */
+export async function runHunt(input: HuntInput, out: PipelineOutput, wording: StopWording = cliStopWording): Promise<HuntRunResult> {
+  const { owner, signal } = input;
+  const dryRun = input.score.dryRun;
+  out.line('== Сбор через агента ==');
+  out.step?.({ kind: 'stage', stage: 'hunt' });
+  const options = { signal, dryRun, ...(input.limit !== undefined ? { limit: input.limit } : {}) };
+  const hunter = input.openHunter();
+  let result: HuntResult;
+  try {
+    result = input.adHoc
+      ? await hunter.hunt.runAdHoc(owner!.id, input.adHoc, options)
+      : await hunter.hunt.runSaved({ ...options, ...(owner ? { ownerId: owner.id } : {}) });
+  } finally {
+    await hunter.close();
+  }
+  if (!result.reports.length) out.line('Включённых поисков через агента нет: добавьте их (/search @indeed node.js | Ireland) или запустите разовый (--help).');
+  for (const report of result.reports) out.line(huntReportLine(report, dryRun, wording));
+  const hunt: CycleStage<HuntCollect> = { ran: true, result: { ...result, dryRun } };
+  const huntFailed = result.reports.some((report) => report.stopped === 'error');
+  if (input.skipScore) return { hunt, score: { ran: false, reason: '--skip-score' }, failed: huntFailed };
+  const scored = await scoreStage(input, out, wording);
+  return { hunt, score: scored.score, failed: huntFailed || scored.failed };
 }

@@ -121,3 +121,39 @@ export function remoteBrowserSettingsFromEnv(env: NodeJS.ProcessEnv = process.en
   if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error(`REMOTE_BROWSER_PORT должен быть портом 1–65535, получено "${portRaw}"`);
   return { mcpUrl: env.PLAYWRIGHT_MCP_URL?.trim() || defaultMcpUrl, port, publicUrl };
 }
+
+export const defaultHuntTimeoutMs = 8 * 60_000;
+
+export type HuntEnvSettings = Readonly<{
+  /** HUNT_MAX_USD_PER_DAY: list-price USD of the collector agent per day, all owners (default 5). */
+  maxUsdPerDay: number;
+  /** Playwright MCP of the agent, for closing the tabs it left (PLAYWRIGHT_MCP_URL). */
+  mcpUrl: string;
+}>;
+
+/**
+ * The collector agent of the hunt task: always the logged-in Claude account (subscription), never DeepSeek;
+ * HUNT_MODEL (default sonnet), HUNT_TIMEOUT_MS per agent run (default 8 min); MCP and AGENT_CWD as for applying.
+ */
+export function huntAgentConfigFromEnv(env: NodeJS.ProcessEnv = process.env): ClaudeAgentConfig {
+  const timeout = env.HUNT_TIMEOUT_MS?.trim();
+  const timeoutMs = timeout ? Number(timeout) : defaultHuntTimeoutMs;
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new Error(`HUNT_TIMEOUT_MS должно быть положительным целым, получено "${timeout}"`);
+  return {
+    claudeBin: 'claude',
+    settingsPath: null,
+    model: env.HUNT_MODEL?.trim() || 'sonnet',
+    mcpUrl: env.PLAYWRIGHT_MCP_URL?.trim() || defaultMcpUrl,
+    workDir: path.join(defaultAgentWorkDir, 'hunt'),
+    agentCwd: env.AGENT_CWD?.trim() || defaultAgentCwd,
+    timeoutMs,
+    prices: null,
+  };
+}
+
+export function huntSettingsFromEnv(env: NodeJS.ProcessEnv = process.env): HuntEnvSettings {
+  const raw = env.HUNT_MAX_USD_PER_DAY?.trim();
+  const maxUsdPerDay = raw ? Number(raw) : 5;
+  if (!Number.isFinite(maxUsdPerDay) || maxUsdPerDay < 0) throw new Error(`HUNT_MAX_USD_PER_DAY должно быть неотрицательным числом, получено "${raw}"`);
+  return { maxUsdPerDay, mcpUrl: env.PLAYWRIGHT_MCP_URL?.trim() || defaultMcpUrl };
+}

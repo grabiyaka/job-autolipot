@@ -35,14 +35,17 @@ LinkedIn в короткий список оценённых вакансий в
 ## 2. Конвейер целиком
 
 ```
- LinkedIn (выдача и страницы вакансий)
-     │  только чтение: брокер agent Chromium, Unix-сокет /run/agent-browser/broker.sock
-     ▼
- ┌─ 1. Сбор ✅ ─────────────── npm run collect ───────────────────────────────┐
- │  выдача → фильтр по названию → страница вакансии (компания, описание)       │
- │  неподходящее название → rejected (страница не открывается)                 │
- └──────────────────────────────┬──────────────────────────────────────────────┘
-                                ▼
+ LinkedIn (выдача и страницы вакансий)          Indeed, Djinni, Remote OK, Wellfound, любой https-сайт
+     │  только чтение: брокер agent Chromium,        │  только чтение: агент Claude (подписка) через
+     │  /run/agent-browser/broker.sock               │  Playwright MCP, хук в режиме browse
+     ▼                                               ▼
+ ┌─ 1. Сбор ✅ ─── npm run collect ───┐  ┌─ 1а. Сбор через агента ✅ ── npm run hunt ─┐
+ │  выдача → фильтр по названию →     │  │  агент: выдача → код: канон URL, дедуп,     │
+ │  страница вакансии                 │  │  фильтр по названию → агент: описания новых │
+ │  название не то → rejected         │  │  капча/вход → сайт пропускается              │
+ └─────────────────┬──────────────────┘  └──────────────────┬──────────────────────────┘
+                   └──────────────┬────────────────────────┘
+                                  ▼
                 SQLite autopilot: server/data/job-autopilot.db
                 таблица jobs, статус found
                                 │
@@ -70,9 +73,10 @@ LinkedIn в короткий список оценённых вакансий в
 
 Всё это одной командой — `npm run cycle` ([scripts/cycle.ts](../server/scripts/cycle.ts)): сбор, затем
 отбор всех `found` (и новых, и оставшихся с прошлых прогонов), затем отправка в JT. Отдельно этапы
-запускаются `npm run collect` и `npm run score`. Те же прогоны запускает Telegram-бот (`npm run bot`):
-командой `/run <задача>` (или короче `/cycle`, `/collect`, `/score`, `/apply` из меню «/») или по
-расписанию ([telegram.md](telegram.md)).
+запускаются `npm run collect` и `npm run score`. Другие биржи — отдельная задача `npm run hunt`
+([hunt.md](hunt.md)): сбор через агента, затем те же отбор и отправка; `cycle` остаётся только LinkedIn.
+Те же прогоны запускает Telegram-бот (`npm run bot`): командой `/run <задача>` (или короче `/cycle`,
+`/collect`, `/score`, `/hunt`, `/apply` из меню «/») или по расписанию ([telegram.md](telegram.md)).
 
 ### Где живут данные
 
@@ -109,8 +113,9 @@ LinkedIn в короткий список оценённых вакансий в
 | — | `rejected` | сборщик: название не прошло `--include` / `--exclude` |
 | `found` | `scored` | scorer (`recordScore`): модель дала оценку |
 | `found` | `queued`, `rejected`, `skipped` | человек (`PATCH /api/jobs/:id`) или scorer (`recordDecision`, повтор → `skipped`) |
-| `scored` | `scored`, `queued`, `rejected`, `skipped` | scorer сразу после оценки: ≥ порога → `queued`, иначе `rejected`; человек |
-| `rejected` | `scored`, `queued`, `skipped` | человек может вернуть отсеянную в очередь |
+| `scored` | `queued`, `rejected`, `skipped` | scorer сразу после оценки: ≥ порога → `queued`, иначе `rejected`; человек |
+| `scored`, `rejected` | `scored` | переоценка: `recordScore` перезаписывает оценку. Таблица это разрешает, но сейчас ничего её не запускает: scorer берёт только `found`, HTTP-маршрута для оценки нет |
+| `rejected` | `queued`, `skipped` | человек может вернуть отсеянную в очередь |
 | `queued` | `rejected`, `skipped` | человек; трекер-сервис ставит `skipped`, если JT ответил «уже есть» или «уже подавался» |
 | `found`, `scored`, `rejected` | `queued` | applier: вакансия есть в JT To Apply ([applications.md](applications.md)) |
 | `queued` | `applying` | applier (`recordApplyStatus`) |
@@ -122,6 +127,10 @@ LinkedIn в короткий список оценённых вакансий в
 | `failed` | `queued`, `skipped` | человек |
 | `skipped` | `queued` | человек |
 | `applied` | — | финальный |
+
+В `scored` вакансия находится доли секунды: scorer сразу пишет решение. Задержаться там она может, только если
+прогон упал между оценкой и решением; такую вакансию scorer больше не возьмёт (он смотрит только `found`), её
+решает человек.
 
 Человек вручную ставит только `queued`, `rejected` и `skipped`. Изменение статуса условное: если
 другой процесс успел поменять статус, запрос получает 409 `JOB_STATUS_CHANGED`. В прогоне оценки такая
@@ -168,6 +177,25 @@ LinkedIn в короткий список оценённых вакансий в
   убирает свои трекинг-параметры, домен срезает `#фрагмент`.
 - **Модуль сайта не знает о пользователях и БД** — только превращает запрос в страницы карточек.
   Новый сайт — файл `<Name>Source.ts` и строка в [SearchSources.ts](../server/src/searches/SearchSources.ts).
+
+### 4.1а. Сбор через агента ✅
+
+Команда `npm run hunt` ([scripts/hunt.ts](../server/scripts/hunt.ts)), `/hunt` в боте; подробности —
+[hunt.md](hunt.md). Пока у биржи нет своего модуля-источника, её читает агент Claude (`claude -p` на
+подписке, модель `HUNT_MODEL`, по умолчанию sonnet) через Playwright MCP. Сохранённый поиск —
+`source: agent` и `site` (`indeed`, `djinni`, `remoteok`, `wellfound` или https-адрес), в боте
+`/search @indeed node.js | Ireland | +node | -java`.
+
+1. Агент читает выдачу (до 20 карточек, до 2 страниц) и возвращает JSON по схеме; страницы вакансий не открывает.
+2. Код ([HuntRules.ts](../server/src/searches/HuntRules.ts), [AgentSites.ts](../server/src/searches/AgentSites.ts)):
+   канонический URL сайта (Indeed — `viewjob?jk=<16 hex>`), чужой хост и не страница вакансии — некорректные,
+   повторы внутри прогона отбрасываются, `unknownUrls`, фильтр по названию (отсеянные → `rejected`).
+3. Второй, новый запуск агента копирует описания новых прошедших вакансий дословно (до 4000 символов),
+   не больше `limit` (по умолчанию 10) на поиск. Записываются только вакансии с описанием; остальные
+   следующий прогон увидит новыми и спросит снова.
+4. Капча, Cloudflare или стена входа — поиск останавливается, остальные поиски этого сайта в прогоне пропускаются.
+5. Затраты (цена Claude, на подписке условная) пишутся в `search_runs.costMicros`; дневной предел
+   `HUNT_MAX_USD_PER_DAY` проверяется перед каждым запуском агента. Вкладки, открытые агентом, закрывает код.
 
 ### 4.2. Отбор ✅
 
@@ -341,6 +369,10 @@ LinkedIn Easy Apply и останавливается перед Submit. Поп�
 | `SearchRepository.ts` | `searches` и `search_runs` |
 | `SearchTypes.ts` | контракт модуля сайта (`JobSource`, `Browser`, `HttpClient`) и ошибки браузера |
 | `SearchSources.ts` | реестр источников (сейчас только LinkedIn) |
+| `AgentSites.ts` | биржи сбора через агента: адреса выдачи, хосты, канонический URL, подсказки; общий сайт по https-адресу |
+| `HuntRules.ts` | промпты и схемы агента сбора, разбор ответа, карточки и описания, даты «4d ago», какие вкладки закрыть |
+| `HuntService.ts` | задача hunt: поиски `agent` → агент (выдача) → дедуп и фильтр → агент (описания) → `recordFound`; блокировка сайта, дневной предел |
+| `HuntContracts.ts` | порты `HuntAgent` (агент) и `HuntTabs` (вкладки браузера) |
 | `LinkedinSource.ts` | модуль LinkedIn: выдача, прокрутка, страница вакансии, остановка на стене входа |
 | `LinkedinParser.ts` | разбор URL, ссылок и текста LinkedIn без браузера |
 | **scoring/** | раздел 4.2; HTTP-маршрутов нет, только CLI |
@@ -367,7 +399,7 @@ LinkedIn Easy Apply и останавливается перед Submit. Поп�
 | `ApplicationTypes.ts` | `ApplicationApi` для бота и CLI, статусы, отчёты |
 | **schedules/** | расписание бота, [telegram.md](telegram.md); HTTP-маршрутов нет |
 | `ScheduleService.ts` | расписания владельца (создать или заменить, вкл/выкл, удалить, ближайший запуск) и история `task_runs` |
-| `ScheduleRules.ts` | задачи `collect`/`score`/`cycle`/`apply`, флаги задачи, 5 полей cron, часовой пояс по умолчанию |
+| `ScheduleRules.ts` | задачи `collect`/`score`/`cycle`/`hunt`/`apply`, флаги задачи, 5 полей cron, часовой пояс по умолчанию |
 | `ScheduleRepository.ts` | таблицы `schedules` и `task_runs` |
 | `ScheduleTypes.ts` | порт `CronCalendar` (`check`, `next`), его реализует плагин `cron.ts` |
 
@@ -375,7 +407,7 @@ LinkedIn Easy Apply и останавливается перед Submit. Поп�
 
 | Файл | За что отвечает |
 | --- | --- |
-| `environment.ts` | читает `../.env`; `ollamaConfigFromEnv`, `jobTrackerConfigFromEnv`, `claudeAgentConfigFromEnv`, `applySettingsFromEnv` |
+| `environment.ts` | читает `../.env`; `ollamaConfigFromEnv`, `jobTrackerConfigFromEnv`, `claudeAgentConfigFromEnv`, `applySettingsFromEnv`, `huntAgentConfigFromEnv`, `huntSettingsFromEnv` |
 | `database.ts` | Prisma Client для SQLite из `DATABASE_URL` |
 | `infrastructure.ts` | Prisma, часы и генератор ID для веб-сервера |
 | `browser-broker.ts` | клиент брокера agent Chromium (только чтение) |
@@ -383,7 +415,8 @@ LinkedIn Easy Apply и останавливается перед Submit. Поп�
 | `ollama.ts` | клиент Ollama `/api/chat`: JSON-схема, `think: false`, проверка обрезки, один повтор |
 | `job-tracker.ts` | клиент AI API JT: Bearer-токен, ETag, пачки, оценки, To Apply, отметка APPLIED (`markApplied`: 404/409 — результат, не ошибка); без повторов |
 | `claude-agent.ts` | запуск `claude -p` на DeepSeek с Playwright MCP: аргументы, таймаут, токены и стоимость ([agent-runner.md](agent-runner.md)) |
-| `agent-guard-rules.ts` | чистые правила хука агента `guardDecision`: что запрещено в `fill` и `submit` |
+| `agent-guard-rules.ts` | чистые правила хука агента `guardDecision`: что запрещено в `fill` и `submit`; режим `browse` (только чтение) агента сбора |
+| `browser-tabs.ts` | вкладки agent Chromium как CDP-цели через Playwright MCP: список и закрытие по id (hunt закрывает вкладки своего агента) |
 | `browser-lock.ts` | файловая блокировка agent Chromium `server/data/browser.lock` («браузер занят: …») |
 | `telegram.ts` | клиент Bot API на fetch: `getUpdates`, `sendMessage`, `editMessageText`, `answerCallbackQuery`, `setMyCommands`; кнопки callback, `url` и `web_app`; повтор по `retry_after` на 429; токена нет в ошибках |
 | `mcp-client.ts` | минимальный клиент MCP (streamable HTTP на fetch, без SDK): `initialize`, `tools/call`, JSON и SSE |
@@ -402,6 +435,7 @@ LinkedIn Easy Apply и останавливается перед Submit. Поп�
 | `register-domain-routes.ts` | регистрирует маршруты шести HTTP-доменов |
 | `create-applications.ts` | подача: плагин агента как `ApplyAgent` (настройки читаются при первом запуске), lock браузера, путь резюме, сборка для CLI и бота |
 | `create-collector.ts` | сборщик для CLI: `SearchService` + `JobService` + брокер; `pingBrowser` — жив ли брокер |
+| `create-hunter.ts` | сбор через агента: `HuntService` + `JobService` + плагин агента в режиме `browse` + вкладки MCP |
 | `create-searches.ts` | `SearchService` с источниками, браузером и HTTP-клиентом |
 | `create-scorer.ts` | оценщик для CLI: `ScoringService` + `TrackerService` + Ollama; ошибки Ollama «сервер/HTTP» → `ScoringModelUnavailableError` |
 | `create-trackers.ts` | `TrackerService` с клиентом JT или без него (`null` — «не настроен») |
@@ -419,8 +453,9 @@ LinkedIn Easy Apply и останавливается перед Submit. Поп�
 | `collect.ts` | `npm run collect` | сбор вакансий |
 | `score.ts` | `npm run score` | оценка и отправка в JT |
 | `cycle.ts` | `npm run cycle` | сбор → оценка → JT одной командой |
-| `pipeline-cli.ts` | — | общий разбор флагов и печать отчётов для `collect`, `score`, `cycle` и бота |
-| `pipeline-tasks.ts` | — | общие прогоны `collectJobs`, `scoreOwners`, `runCycle` для CLI и бота |
+| `hunt.ts` | `npm run hunt` | сбор через агента с других бирж → оценка → JT |
+| `pipeline-cli.ts` | — | общий разбор флагов и печать отчётов для `collect`, `score`, `cycle`, `hunt` и бота |
+| `pipeline-tasks.ts` | — | общие прогоны `collectJobs`, `scoreOwners`, `runCycle`, `runHunt` для CLI и бота |
 | `bot.ts` | `npm run bot` | Telegram-бот: long polling, расписание, задачи |
 | `bot-commands.ts` | — | разбор команд и кнопок бота, тексты ответов |
 | `bot-runtime.ts` | — | `TaskRunner` (одна задача за раз), `Scheduler` (таймер расписания), `TelegramBot` (команды) |
@@ -428,7 +463,7 @@ LinkedIn Easy Apply и останавливается перед Submit. Поп�
 | `apply.ts` | `npm run apply` | подача: заполнить (`--limit`, `--job`), `--list`, `--submit`, `--reject`, `--answer` |
 | `apply-cli.ts` | — | разбор аргументов и печать для `apply` |
 | `answers-cli.ts` | — | разбор аргументов и печать для `answers` |
-| `agent-guard.ts` | — | хук PreToolUse агента подачи (вызывает `claude`, не человек) |
+| `agent-guard.ts` | — | хук PreToolUse агента подачи и агента сбора (вызывает `claude`, не человек) |
 | `browser-check.ts` | `npm run browser:check` | проверка брокера и входа в LinkedIn |
 | `create-user.ts` | `npm run user:create` | создать пользователя (из `dist`, нужен build) |
 | `check-architecture.ts` | `npm run architecture` | проверка границ доменов |
@@ -489,6 +524,9 @@ JT — отдельное приложение (свой репозиторий,
 | `REMOTE_BROWSER_PUBLIC_URL` | пусто | адрес удалённого браузера в tailnet (`https://home-server.tail0147a9.ts.net:8444`); пусто — кнопка «🖥 Открыть браузер» выключена |
 | `REMOTE_BROWSER_PORT` | `3420` | локальный порт страницы удалённого браузера (только `127.0.0.1`) |
 | `BOT_SCHEDULED_REPORT` | `changes` | отчёт после планового запуска: `changes` — при новых queued или ошибках, `always` — всегда |
+| `HUNT_MODEL` | `sonnet` | модель агента сбора `hunt` (всегда аккаунт Claude, не DeepSeek) |
+| `HUNT_TIMEOUT_MS` | `480000` | предел одного запуска агента сбора (выдача или описания) |
+| `HUNT_MAX_USD_PER_DAY` | `5` | дневной предел затрат агента сбора по ценам Claude (на подписке условный), все пользователи |
 
 **Ollama и модели.** Ollama работает системным сервисом (`systemctl status ollama`) на `OLLAMA_URL`,
 модель должна быть скачана: `ollama pull qwen3.5:4b`.
@@ -499,11 +537,12 @@ JT — отдельное приложение (свой репозиторий,
 
 | Этап | Состояние |
 | --- | --- |
-| 1. Сбор (LinkedIn) | ✅ работает; нет удобного заведения поисков из терминала и второго источника |
+| 1. Сбор (LinkedIn) | ✅ работает; нет удобного заведения поисков из терминала |
+| 1а. Сбор через агента (Indeed, Djinni, Remote OK, Wellfound, любой https-сайт) | ✅ `npm run hunt`, `/hunt`, тесты на фейках, живая проверка на Djinni (3 описания, ~1,5 мин, $0.30); 📝 свои модули-источники для бирж с большим потоком ([hunt.md](hunt.md#как-заменить-сайт-настоящим-сборщиком)) |
 | 2. Отбор (qwen по профилю JT) + передача в JT | ✅ код и тесты готовы, `npm run cycle` объединяет этапы 1–2; проверено на 17 живых вакансиях (выбрана `qwen3.5:4b`, порог 50); ⏳ проверка на ~50 |
 | 3. Подача по одной вакансии | ✅ код и тесты на фейках: `npm run apply`, DeepSeek + Playwright MCP, «стоп перед Submit», отправка после ✅, отметка в JT; ⏳ живая проверка на 5 вакансиях |
 | 4. Telegram и банк ответов | ✅ код и тесты: бот `npm run bot` (запуск, `/stop`, статус, поиски, queued, банк ответов, `/run apply`, ✅/❌, вопросы агента реплаем, меню «/», удалённый браузер для сайтов с аккаунтом); бот запущен на home-server; ⏳ живая проверка удалённого браузера на Workday/iCIMS |
-| 5. Расписание и автоподача | ✅ расписание `collect`/`score`/`cycle`/`apply` в боте (cron, вкл/выкл), лимиты подачи; 📝 автоподача без ✅ |
+| 5. Расписание и автоподача | ✅ расписание `collect`/`score`/`cycle`/`hunt`/`apply` в боте (cron, вкл/выкл), лимиты подачи; 📝 автоподача без ✅ |
 | 6. Веб-интерфейс | 📝 по желанию; страница «Вакансии» пока пустая |
 
 Чек-листы — в [guide.md](guide.md#6-дорожная-карта).
@@ -516,7 +555,7 @@ JT — отдельное приложение (свой репозиторий,
   открыта блокировка общей вкладки agent Chromium от Telegram-бота local-agent на время прогона.
   Клиенты Playwright MCP вне job-autopilot lock `server/data/browser.lock` не видят: 2026-11-08 в браузере
   агента появилась чужая вкладка с отправленной заявкой greenhouse.io, источник не найден.
-- Нужен ли второй источник сбора кроме LinkedIn.
+- Какие биржи перевести со сбора через агента на свой модуль-источник (дешевле и быстрее при большом потоке).
 
 ## 9. Глоссарий
 

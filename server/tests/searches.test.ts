@@ -437,7 +437,7 @@ describe('Searches HTTP API', () => {
   it('lists sources, rejects unknown ones and hides other owners\' searches', async () => {
     const sources = await server.inject({ method: 'GET', url: '/api/searches/sources', headers: owner });
     expect(sources.statusCode).toBe(200);
-    expect(sources.json()).toEqual([{ id: 'linkedin', title: 'LinkedIn' }]);
+    expect(sources.json()).toEqual([{ id: 'linkedin', title: 'LinkedIn' }, { id: 'agent', title: expect.stringContaining('Агент') }]);
 
     const created = await server.inject({ method: 'POST', url: '/api/searches', headers: owner, payload: { source: 'nowhere', keywords: 'node' } });
     expect(created.statusCode).toBe(400);
@@ -469,6 +469,48 @@ describe('Searches HTTP API', () => {
     const tooLong = await server.inject({ method: 'PATCH', url: `/api/searches/${search.id}`, headers: owner, payload: { excludeTitle: ['x'.repeat(61)] } });
     expect(tooLong.statusCode).toBe(400);
     expect((await server.inject({ method: 'GET', url: `/api/searches/${search.id}/runs`, headers: owner })).json()).toEqual([]);
+  });
+});
+
+describe('Agent searches over HTTP', () => {
+  let testDatabase: ReturnType<typeof createTestDatabase>;
+  let database: PrismaClient;
+  let server: Awaited<ReturnType<typeof buildServer>>;
+  let owner: AuthHeaders;
+
+  beforeAll(async () => {
+    testDatabase = createTestDatabase();
+    database = createPrismaClient(testDatabase.url);
+    server = await buildServer({ databaseUrl: testDatabase.url, logger: false, auth: testAuth });
+    owner = (await createAuthFixture(server, database)).userHeaders;
+  }, 60_000);
+
+  afterAll(async () => {
+    await server?.close();
+    await database?.$disconnect();
+    testDatabase?.dispose();
+  });
+
+  it('saves a site for source agent, refuses unknown sites and a site on another source', async () => {
+    const post = (payload: object) => server.inject({ method: 'POST', url: '/api/searches', headers: owner, payload });
+    const indeed = await post({ source: 'agent', site: 'Indeed', keywords: 'node.js', location: 'Ireland', excludeTitle: ['java'], easyApplyOnly: true });
+    expect(indeed.statusCode).toBe(201);
+    expect(indeed.json()).toMatchObject({ source: 'agent', site: 'indeed', keywords: 'node.js', excludeTitle: ['java'], easyApplyOnly: false });
+    expect((await post({ source: 'agent', site: 'https://jobs.example.test/search?q={q}', keywords: 'node' })).json()).toMatchObject({ site: 'https://jobs.example.test/search?q={q}' });
+    expect((await post({ source: 'agent', site: 'monster', keywords: 'node' })).json()).toMatchObject({ error: { code: 'INVALID_AGENT_SITE' } });
+    expect((await post({ source: 'agent', keywords: 'node' })).statusCode).toBe(400);
+    expect((await post({ source: 'linkedin', site: 'indeed', keywords: 'node' })).json()).toMatchObject({ error: { code: 'INVALID_SEARCH' } });
+    const linkedin = await post({ source: 'linkedin', keywords: 'node' });
+    expect(linkedin.json()).toMatchObject({ site: null });
+
+    const id = (indeed.json() as { id: string }).id;
+    const changed = await server.inject({ method: 'PATCH', url: `/api/searches/${id}`, headers: owner, payload: { keywords: 'typescript' } });
+    expect(changed.json()).toMatchObject({ source: 'agent', site: 'indeed', keywords: 'typescript' });
+    await database.searchRun.create({ data: {
+      searchId: id, startedAt: new Date(), finishedAt: new Date(), pages: 1, seen: 20, fresh: 8, created: 6, duplicates: 0, invalid: 0,
+      described: 5, costMicros: 400_000, stopped: 'limit',
+    } });
+    expect((await server.inject({ method: 'GET', url: `/api/searches/${id}/runs`, headers: owner })).json()).toMatchObject([{ described: 5, costMicros: 400_000, stopped: 'limit' }]);
   });
 });
 

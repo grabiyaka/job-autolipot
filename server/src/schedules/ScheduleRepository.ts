@@ -20,7 +20,7 @@ function toRun(record: TaskRunRecord): TaskRun {
   };
 }
 
-const taskOrder: Record<PipelineTask, number> = { collect: 0, score: 1, cycle: 2, apply: 3 };
+const taskOrder: Record<PipelineTask, number> = { collect: 0, score: 1, cycle: 2, hunt: 3, apply: 4 };
 
 /** Schedules and task runs are always read and changed together with their owner. */
 export class ScheduleRepository {

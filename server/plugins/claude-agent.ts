@@ -4,8 +4,8 @@ import { constants } from 'node:fs';
 import { access, chmod, copyFile, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentFilesDir, allowedTools, disallowedTools, guardLogFile, httpsHost, screenshotsDir } from './agent-guard-rules.js';
-import type { ApplyMode } from './agent-guard-rules.js';
+import { agentFilesDir, guardLogFile, httpsHost, screenshotsDir, toolsForMode } from './agent-guard-rules.js';
+import type { AgentMode } from './agent-guard-rules.js';
 
 /**
  * Runs `claude -p` (on DeepSeek through `--settings`) as a browser agent with Playwright MCP and
@@ -15,6 +15,8 @@ import type { ApplyMode } from './agent-guard-rules.js';
  * Safety does not rely on the prompt: only the Playwright tools in `allowedTools` are allowed, and
  * every call first goes through the PreToolUse hook scripts/agent-guard.ts (rules in
  * agent-guard-rules.ts), which gets the mode through APPLY_MODE and the start URL through APPLY_START_URL.
+ * The read-only `browse` mode (the collector agent) has its own tool list, gets the hosts of its site
+ * through APPLY_ALLOWED_HOSTS and needs no upload copies.
  *
  * Two folders:
  * - `agentCwd` (by default /srv/agent-files/agent-run): cwd of `claude`, with its .claude/settings.json
@@ -71,7 +73,11 @@ export type AgentRunRequest = Readonly<{
   systemPrompt: string;
   /** JSON schema of the answer (--json-schema). */
   schema: object;
-  mode: ApplyMode;
+  mode: AgentMode;
+  /** browse: the only https hosts the browser may open (APPLY_ALLOWED_HOSTS of the guard). */
+  allowedHosts?: readonly string[];
+  /** --max-turns; unset — no limit but the timeout. */
+  maxTurns?: number;
   /**
    * https URL the agent starts from (a job page outside LinkedIn, or the external form for
    * submit_fresh). The guard lets the browser open its host (APPLY_START_URL); the caller still puts
@@ -267,6 +273,7 @@ const snippet = (text: string) => {
 };
 
 export function agentArgs(files: Readonly<{ mcpConfig: string; systemPromptFile: string }>, config: ClaudeAgentConfig, request: AgentRunRequest): string[] {
+  const tools = toolsForMode(request.mode);
   return [
     '-p', request.prompt,
     ...(config.settingsPath ? ['--settings', config.settingsPath] : []),
@@ -274,9 +281,10 @@ export function agentArgs(files: Readonly<{ mcpConfig: string; systemPromptFile:
     '--setting-sources', 'project',
     '--mcp-config', files.mcpConfig, '--strict-mcp-config',
     '--system-prompt-file', files.systemPromptFile,
-    '--allowedTools', allowedTools.join(','),
-    '--disallowedTools', disallowedTools.join(','),
+    '--allowedTools', tools.allowed.join(','),
+    '--disallowedTools', tools.disallowed.join(','),
     '--permission-mode', 'dontAsk',
+    ...(request.maxTurns !== undefined ? ['--max-turns', String(request.maxTurns)] : []),
     '--json-schema', JSON.stringify(request.schema),
     '--output-format', 'json',
     ...(request.resumeSessionId ? ['--resume', request.resumeSessionId] : []),
@@ -418,13 +426,18 @@ export function createClaudeAgent(config: ClaudeAgentConfig): ClaudeAgent {
           throw new AgentUnavailableError(`Нет файла настроек DeepSeek ${config.settingsPath} (DEEPSEEK_SETTINGS)`);
         }
       }
+      const browse = request.mode === 'browse';
+      if (browse && !request.allowedHosts?.length) throw new Error('Для режима browse нужны разрешённые хосты сайта');
       const mcpConfig = await prepareAgentCwd(config);
       const uploadDir = agentUploadDir(config.agentCwd);
       const filesSource = config.filesSource ?? agentFilesDir;
-      try {
-        await syncAgentFiles(filesSource, uploadDir);
-      } catch (error) {
-        throw new AgentUnavailableError(`Не удалось скопировать файлы для загрузки из ${filesSource}: ${(error as Error).message}`);
+      // Reading job boards uploads nothing: no copies, and the guard gets no upload folder.
+      if (!browse) {
+        try {
+          await syncAgentFiles(filesSource, uploadDir);
+        } catch (error) {
+          throw new AgentUnavailableError(`Не удалось скопировать файлы для загрузки из ${filesSource}: ${(error as Error).message}`);
+        }
       }
       const started = Date.now();
       const runDir = path.join(config.workDir, 'runs', runId(new Date(started)));
@@ -433,8 +446,8 @@ export function createClaudeAgent(config: ClaudeAgentConfig): ClaudeAgent {
       await writeFile(systemPromptFile, request.systemPrompt);
 
       // Hooks inherit this env. CLAUDECODE is dropped so a run started from a Claude session is not taken as nested.
-      // APPLY_START_URL of the parent is dropped too: only this run's startUrl may widen the allowed hosts.
-      const { CLAUDECODE: _nested, APPLY_START_URL: _inherited, ...env } = process.env;
+      // APPLY_START_URL / APPLY_ALLOWED_HOSTS of the parent are dropped too: only this run may widen the allowed hosts.
+      const { CLAUDECODE: _nested, APPLY_START_URL: _inherited, APPLY_ALLOWED_HOSTS: _hosts, APPLY_UPLOAD_DIR: _uploads, ...env } = process.env;
       // On the Claude account a base URL / token / model override of the parent would send the run elsewhere.
       if (config.settingsPath === null) {
         for (const name of Object.keys(env)) if (/^ANTHROPIC_(BASE_URL|AUTH_TOKEN|MODEL|DEFAULT_\w+_MODEL|SMALL_FAST_MODEL)$/.test(name)) delete env[name];
@@ -444,7 +457,8 @@ export function createClaudeAgent(config: ClaudeAgentConfig): ClaudeAgent {
         exit = await runProcess(config.claudeBin, agentArgs({ mcpConfig, systemPromptFile }, config, request), {
           cwd: config.agentCwd,
           env: {
-            ...env, APPLY_MODE: request.mode, APPLY_GUARD_DIR: runDir, APPLY_UPLOAD_DIR: uploadDir,
+            ...env, APPLY_MODE: request.mode, APPLY_GUARD_DIR: runDir,
+            ...(browse ? { APPLY_ALLOWED_HOSTS: request.allowedHosts!.join(',') } : { APPLY_UPLOAD_DIR: uploadDir }),
             ...(request.startUrl !== undefined ? { APPLY_START_URL: request.startUrl } : {}),
           },
           timeoutMs: config.timeoutMs,

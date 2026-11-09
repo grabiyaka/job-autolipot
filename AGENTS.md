@@ -21,6 +21,7 @@
 - [Фаза 3](docs/phase3/README.md) — банк ответов, Telegram-бот с расписанием, подача через DeepSeek; решения, проба, статусы пакетов.
 - [Запуск агента](docs/agent-runner.md) — `claude -p` на DeepSeek, хук-защита «не отправлять», lock браузера.
 - [Подача](docs/applications.md) — домен `applications`, `npm run apply`, ✅ перед отправкой, отметка в Job-Tracker.
+- [Сбор через агента](docs/hunt.md) — задача `hunt`: другие биржи через агента Claude, сайты, лимиты, замена настоящим сборщиком.
 
 ## Разделение проекта
 

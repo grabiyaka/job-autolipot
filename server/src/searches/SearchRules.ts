@@ -1,15 +1,19 @@
 import { ApplicationError } from '../../framework/core/errors.js';
+import { agentSourceId, resolveAgentSite } from './AgentSites.js';
 import type { JobCard, JobSource, SearchQuery } from './SearchTypes.js';
 
 export const searchStopReasons = ['end', 'known', 'limit', 'aborted', 'error'] as const;
 export type SearchStopReason = typeof searchStopReasons[number];
 
 export type SearchFields = Readonly<{
-  source: string; keywords: string; location: string | null; includeTitle: string[]; excludeTitle: string[];
+  source: string; site: string | null; keywords: string; location: string | null; includeTitle: string[]; excludeTitle: string[];
   easyApplyOnly: boolean;
 }>;
 export type SearchFieldsInput = Readonly<{
-  source: string; keywords: string; location?: string | null;
+  source: string;
+  /** Only for `source: agent`: a known site id (indeed, djinni…) or an https address of another board. */
+  site?: string | null;
+  keywords: string; location?: string | null;
   includeTitle?: readonly string[] | null; excludeTitle?: readonly string[] | null;
   easyApplyOnly?: boolean;
 }>;
@@ -62,18 +66,26 @@ export function titleRejection(title: string, filter: TitleFilter): string | nul
   return null;
 }
 
-/** Trimmed fields of a saved search; the source must be one of the registered modules. */
+/**
+ * Trimmed fields of a saved search. The source must be one of the registered modules, or `agent` with a
+ * site the agent can browse (the site is stored as its key; Easy Apply means nothing there).
+ */
 export function searchFields(input: SearchFieldsInput, sources: readonly JobSource[]): SearchFields {
   const source = input.source.trim().toLowerCase();
   const keywords = input.keywords.trim();
-  if (!sources.some((candidate) => candidate.id === source)) {
+  const agent = source === agentSourceId;
+  if (!agent && !sources.some((candidate) => candidate.id === source)) {
     throw new ApplicationError('UNKNOWN_SEARCH_SOURCE', `Источник «${input.source}» не подключён.`, 400);
   }
+  if (!agent && input.site) {
+    throw new ApplicationError('INVALID_SEARCH', `Сайт задаётся только для поиска через агента (source «${agentSourceId}»).`, 400);
+  }
+  const site = agent ? resolveAgentSite(input.site ?? '').key : null;
   if (!keywords) throw new ApplicationError('INVALID_SEARCH', 'Укажите ключевые слова поиска.', 400);
   return {
-    source, keywords, location: input.location?.trim() || null,
+    source, site, keywords, location: input.location?.trim() || null,
     includeTitle: titleTerms(input.includeTitle), excludeTitle: titleTerms(input.excludeTitle),
-    easyApplyOnly: input.easyApplyOnly ?? false,
+    easyApplyOnly: agent ? false : input.easyApplyOnly ?? false,
   };
 }
 

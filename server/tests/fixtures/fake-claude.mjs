@@ -12,7 +12,7 @@ if (process.env.FAKE_CLAUDE_RECORD) {
   writeFileSync(process.env.FAKE_CLAUDE_RECORD, JSON.stringify({
     argv: process.argv.slice(2),
     cwd: process.cwd(),
-    env: { APPLY_MODE: process.env.APPLY_MODE ?? null, APPLY_GUARD_DIR: process.env.APPLY_GUARD_DIR ?? null, APPLY_UPLOAD_DIR: process.env.APPLY_UPLOAD_DIR ?? null, APPLY_START_URL: process.env.APPLY_START_URL ?? null, CLAUDECODE: process.env.CLAUDECODE ?? null },
+    env: { APPLY_MODE: process.env.APPLY_MODE ?? null, APPLY_GUARD_DIR: process.env.APPLY_GUARD_DIR ?? null, APPLY_UPLOAD_DIR: process.env.APPLY_UPLOAD_DIR ?? null, APPLY_START_URL: process.env.APPLY_START_URL ?? null, CLAUDECODE: process.env.CLAUDECODE ?? null, APPLY_ALLOWED_HOSTS: process.env.APPLY_ALLOWED_HOSTS ?? null },
   }));
 }
 

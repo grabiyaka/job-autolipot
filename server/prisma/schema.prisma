@@ -122,8 +122,10 @@ model TrackerProfile {
 model Search {
   id            String      @id @default(uuid())
   userId        String
-  /// Код модуля-источника из реестра `src/searches/SearchSources.ts`.
+  /// Код модуля-источника из реестра `src/searches/SearchSources.ts` или `agent` — биржа через агента (задача hunt).
   source        String
+  /// Сайт поиска через агента (`source = agent`): id из `src/searches/AgentSites.ts` (indeed, djinni…) или https-адрес; иначе null.
+  site          String?
   keywords      String
   location      String?
   /// JSON-массив слов: в названии вакансии должно быть хотя бы одно (пусто — без ограничения).
@@ -164,6 +166,10 @@ model SearchRun {
   fresh      Int
   /// Новые карточки, отсеянные фильтром по названию (сохранены как rejected).
   filtered   Int              @default(0)
+  /// Поиск через агента: новые вакансии, для которых агент принёс описание.
+  described  Int              @default(0)
+  /// Поиск через агента: затраты прогона в микродолларах (цена по прайсу Claude, на подписке условная).
+  costMicros Int              @default(0)
   created    Int
   duplicates Int
   invalid    Int
@@ -284,6 +290,7 @@ enum PipelineTask {
   score
   cycle
   apply
+  hunt
 }
 
 enum TaskTrigger {

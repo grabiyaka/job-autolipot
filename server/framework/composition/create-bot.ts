@@ -13,10 +13,11 @@ import { ScheduleService } from '../../src/schedules/ScheduleService.js';
 import type { Logger } from '../../src/searches/SearchTypes.js';
 import { UserRepository } from '../../src/users/UserRepository.js';
 import { createCollector } from './create-collector.js';
+import { createHunter } from './create-hunter.js';
 import { createScorer } from './create-scorer.js';
 import { createSearchService } from './create-searches.js';
 import type { ClaudeAgentConfig } from '../../plugins/claude-agent.js';
-import type { ApplyEnvSettings, RemoteBrowserEnvSettings } from '../../plugins/environment.js';
+import type { ApplyEnvSettings, HuntEnvSettings, RemoteBrowserEnvSettings } from '../../plugins/environment.js';
 import { remoteBrowser } from '../../plugins/remote-browser.js';
 import { createJobTrackerClient } from '../../plugins/job-tracker.js';
 import { applyBrowserLock, applySettings, claudeApplyAgent, createApplicationService } from './create-applications.js';
@@ -34,6 +35,9 @@ export type BotSettings = Readonly<{
   apply: ApplyEnvSettings;
   /** The remote browser for `manual` jobs (REMOTE_BROWSER_*); null — the button answers that it is not set up. */
   remoteBrowser: RemoteBrowserEnvSettings | null;
+  /** The collector agent of hunt (HUNT_*): read on its first run. */
+  huntAgentConfig: () => ClaudeAgentConfig;
+  hunt: HuntEnvSettings;
 }>;
 
 export type BotOwner = Actor & Readonly<{ email: string }>;
@@ -68,6 +72,7 @@ export function createBot(settings: BotSettings) {
       trackerConfigured: settings.tracker !== null,
       lockBrowser: (task: string) => acquireBrowserLock({ task: `bot:${task}` }),
       openCollector: (log: Logger = settings.log) => createCollector(settings.databaseUrl, settings.browserSocket, log),
+      openHunter: (log: Logger = settings.log) => createHunter(settings.databaseUrl, { log, agentConfig: settings.huntAgentConfig, hunt: settings.hunt }),
       openScorer: () => createScorer(settings.databaseUrl, { ollama: settings.ollama, tracker: settings.tracker }),
     },
     /**

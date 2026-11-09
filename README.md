@@ -34,6 +34,8 @@ Easy Apply проверен вживую в режиме заполнения, �
    ▼
 1. Сбор        npm run collect: выдача LinkedIn через agent Chromium (брокер, только чтение)
                → фильтр по названию → страница вакансии: компания, описание. Без ИИ.
+               npm run hunt: другие биржи (Indeed, Djinni, Remote OK, Wellfound, любой https-сайт)
+               читает агент Claude только на чтение; дедуп, фильтр и запись — код. Затем отбор и JT.
    │
    ▼
 2. Отбор       npm run score: локальная модель (Ollama, qwen3.5:4b):
@@ -91,6 +93,7 @@ LinkedIn весит 10–50k токенов, и на таком железе м�
 | Домен `scoring` | `server/src/scoring`, `server/plugins/ollama.ts` | оценка `found` локальной моделью, решения `queued`/`rejected`/`skipped`, `npm run score` — [overview](docs/overview.md#42-отбор-) | готов; сравнение моделей на живых данных впереди |
 | Домен `trackers` | `server/src/trackers`, `server/plugins/job-tracker.ts` | профиль из Job-Tracker (кеш по ETag), отправка `queued` с оценкой в To Apply — [docs/trackers.md](docs/trackers.md) | готов |
 | `cycle` | `server/scripts/cycle.ts` | `npm run cycle`: сбор → отбор → Job-Tracker одной командой — [guide](docs/guide.md#сбор-оценка-и-отправка-одной-командой--npm-run-cycle) | готов |
+| Сбор через агента (`hunt`) | `server/src/searches/Hunt*.ts`, `AgentSites.ts`, `server/scripts/hunt.ts` | `npm run hunt`, `/hunt`: агент Claude читает Indeed, Djinni, Remote OK, Wellfound или любой https-сайт (хук `browse`, только чтение), код канонизирует, дедупит и пишет; затем отбор и JT — [docs/hunt.md](docs/hunt.md) | готов; живая проба на Djinni |
 | Домены `applications`, `answers` | `server/src/…` | попытки подачи (Easy Apply и внешние формы), вопросы агента, банк ответов — [docs/applications.md](docs/applications.md) | код готов; ⏳ приёмка с реальной отправкой |
 | Запуск агента | `server/plugins/claude-agent.ts`, `server/scripts/agent-guard.ts` | DeepSeek с MCP, хук «не отправлять», разбор JSON, таймауты — [docs/agent-runner.md](docs/agent-runner.md) | готов |
 | Telegram-бот | `server/scripts/bot*.ts`, `server/plugins/telegram.ts` | `/run` и меню «/», `/status`, поиски, отчёты, вопросы, кнопки ✅/❌, удалённый браузер для сайтов с аккаунтом — [docs/telegram.md](docs/telegram.md) | готов; работает как `systemctl --user` юнит (linger) |

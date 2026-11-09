@@ -11,9 +11,11 @@ const date = { type: 'string', format: 'date-time' } as const;
 const keywords = { type: 'string', minLength: 1, maxLength: 200 } as const;
 const location = { type: ['string', 'null'], maxLength: 200 } as const;
 const titleWords = { type: 'array', maxItems: 50, items: { type: 'string', minLength: 1, maxLength: 60 } } as const;
+/** `source: agent` only: indeed, djinni, remoteok, wellfound or an https address of another board. */
+const site = { type: ['string', 'null'], minLength: 1, maxLength: 300 } as const;
 
 const searchProperties = {
-  id: { type: 'string' }, source: { type: 'string' }, keywords: { type: 'string' }, location: nullableText,
+  id: { type: 'string' }, source: { type: 'string' }, site: nullableText, keywords: { type: 'string' }, location: nullableText,
   includeTitle: { type: 'array', items: { type: 'string' } }, excludeTitle: { type: 'array', items: { type: 'string' } },
   easyApplyOnly: { type: 'boolean' }, enabled: { type: 'boolean' }, createdAt: date, updatedAt: date,
 } as const;
@@ -24,6 +26,7 @@ const searchSchema = {
 const count = { type: 'integer' } as const;
 const runProperties = {
   id: { type: 'string' }, pages: count, seen: count, fresh: count, filtered: count, created: count, duplicates: count, invalid: count,
+  described: count, costMicros: count,
   stopped: { type: 'string', enum: searchStopReasons }, error: nullableText, startedAt: date, finishedAt: date,
 } as const;
 const runSchema = { type: 'object', additionalProperties: false, required: Object.keys(runProperties), properties: runProperties } as const;
@@ -55,11 +58,11 @@ export function registerSearchRoutes(server: FastifyInstance, searches: SearchSe
   server.post<{ Body: SearchInput }>('/api/searches', {
     preHandler: authenticatedAccess,
     schema: {
-      tags, summary: 'Сохранить поиск: сборщик будет прогонять его по расписанию',
+      tags, summary: 'Сохранить поиск: сборщик будет прогонять его по расписанию; source agent + site — биржа через агента (задача hunt)',
       body: {
         type: 'object', additionalProperties: false, required: ['source', 'keywords'],
         properties: {
-          source: { type: 'string', minLength: 1, maxLength: 40 }, keywords, location,
+          source: { type: 'string', minLength: 1, maxLength: 40 }, site, keywords, location,
           includeTitle: titleWords, excludeTitle: titleWords, easyApplyOnly: { type: 'boolean' }, enabled: { type: 'boolean' },
         },
       },

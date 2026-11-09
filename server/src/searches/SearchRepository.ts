@@ -23,7 +23,7 @@ function toRun(record: SearchRunRecord): SearchRun {
 }
 
 type SearchData = Readonly<{
-  source: string; keywords: string; location: string | null;
+  source: string; site: string | null; keywords: string; location: string | null;
   includeTitle: readonly string[]; excludeTitle: readonly string[]; easyApplyOnly: boolean; enabled: boolean;
 }>;
 
@@ -53,7 +53,7 @@ export class SearchRepository {
   async create(ownerId: string, data: SearchData): Promise<Search> {
     return toSearch(await this.prisma.search.create({
       data: {
-        userId: ownerId, source: data.source, keywords: data.keywords, location: data.location,
+        userId: ownerId, source: data.source, site: data.site, keywords: data.keywords, location: data.location,
         easyApplyOnly: data.easyApplyOnly, enabled: data.enabled,
         includeTitle: termsColumn(data.includeTitle), excludeTitle: termsColumn(data.excludeTitle),
       },
@@ -72,6 +72,12 @@ export class SearchRepository {
 
   async recordRun(run: NewSearchRun): Promise<void> {
     await this.prisma.searchRun.create({ data: run });
+  }
+
+  /** Cost of the runs started since `since`, of every owner: the agent runs on one Claude subscription. */
+  async spentSince(since: Date): Promise<number> {
+    const total = await this.prisma.searchRun.aggregate({ where: { startedAt: { gte: since } }, _sum: { costMicros: true } });
+    return total._sum.costMicros ?? 0;
   }
 
   /** Newest first; the caller has already checked that the search belongs to the owner. */
